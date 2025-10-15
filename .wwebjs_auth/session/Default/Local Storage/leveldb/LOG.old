@@ -1,4 +1,3 @@
-2025/10/15-15:17:14.085 118a8 Reusing MANIFEST D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
-2025/10/15-15:17:14.086 118a8 Recovering log #16
-2025/10/15-15:17:14.086 118a8 Reusing old log D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/000016.log 
-2025/10/15-15:17:38.553 118a8 Level-0 table #20: started
+2025/10/15-15:16:48.549 50dc Reusing MANIFEST D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
+2025/10/15-15:16:48.550 50dc Recovering log #16
+2025/10/15-15:16:48.550 50dc Reusing old log D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/000016.log 

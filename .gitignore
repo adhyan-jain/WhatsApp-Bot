@@ -18,10 +18,7 @@ Local Auth/
 local_auth/
 local_auth/*
 \.wwebjs_local_auth\/
-*/LocalAuth/
-
-# Cache created by wweb.js
-wweb.js_cache/
+\*/LocalAuth/
 
 # VS Code
 .vscode/
