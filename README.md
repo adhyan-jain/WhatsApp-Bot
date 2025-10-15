@@ -33,10 +33,10 @@ Environment variable
 
 ```bash
 # Unix / macOS
-export OWNER_NUMBER=918766269971
+export OWNER_NUMBER=9112345678
 
 # Windows (PowerShell)
-$env:OWNER_NUMBER = '918766269971@c.us'
+$env:OWNER_NUMBER = '9112345678@c.us'
 ```
 
 When `main.js` runs it will normalize the value to the internal WhatsApp ID form (append `@c.us` if missing).
