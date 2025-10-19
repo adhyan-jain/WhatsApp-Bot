@@ -1,17 +1,26 @@
 {
   "name": "whatsapp-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "WhatsApp bot with GitHub issue integration",
+  "main": "main.js",
+  "type": "commonjs",
   "scripts": {
+    "start": "node main.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "automation",
+    "octokit",
+    "github"
+  ],
+  "author": "Adhyan Jain",
+  "license": "MIT",
   "dependencies": {
+    "@octokit/rest": "^21.0.2",
     "dotenv": "^17.2.3",
+    "puppeteer": "^23.6.1",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.1"
   }
