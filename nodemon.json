@@ -1,0 +1,11 @@
+{
+  "ignore": [
+    "data/**",
+    ".wwebjs_auth/**",
+    ".wwebjs_cache/**",
+    "*.json"
+  ],
+  "watch": [
+    "main.js"
+  ]
+}
