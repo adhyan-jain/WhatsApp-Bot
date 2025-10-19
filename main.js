@@ -21,6 +21,27 @@ const client = new Client({
   },
 });
 
+const contactCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000;
+
+async function getCachedContact(id) {
+  const now = Date.now();
+  const cached = contactCache.get(id);
+  
+  if (cached && (now - cached.timestamp) < CACHE_DURATION) {
+    return cached.contact;
+  }
+  
+  try {
+    const contact = await client.getContactById(id);
+    contactCache.set(id, { contact, timestamp: now });
+    return contact;
+  } catch (e) {
+    console.error(`Failed to get contact ${id}:`, e);
+    return null;
+  }
+}
+
 client.on("qr", (qr) => {
   console.log("Scan this QR code to log in:");
   qrcode.generate(qr, { small: true });
@@ -113,28 +134,24 @@ $issue complete 2`;
         return;
       }
 
-      const mentionContacts = [];
-      for (const id of toMention) {
-        try {
-          const contact = await client.getContactById(id);
-          mentionContacts.push(contact);
-        } catch (e) {
-          console.error(`Failed to get contact for ${id}:`, e);
-        }
-      }
+      const mentionContacts = await Promise.all(
+        toMention.map(id => getCachedContact(id))
+      );
+      
+      const validContacts = mentionContacts.filter(c => c !== null);
 
-      if (mentionContacts.length === 0) {
+      if (validContacts.length === 0) {
         await chat.sendMessage('Could not resolve any contacts.');
         return;
       }
 
       let mentionText = "";
-      mentionContacts.forEach((contact) => {
+      validContacts.forEach((contact) => {
         mentionText += `@${contact.number || (contact.id && contact.id.user) || contact.id} `;
       });
 
-      await chat.sendMessage(mentionText, { mentions: mentionContacts });
-      console.log(`Successfully mentioned ${mode} members (${mentionContacts.length})`);
+      await chat.sendMessage(mentionText, { mentions: validContacts });
+      console.log(`Successfully mentioned ${mode} members (${validContacts.length})`);
     } catch (err) {
       console.error("Error in $everyone command:", err);
       try {
@@ -187,6 +204,22 @@ $issue complete 2`;
         } else {
           let lines = "*Open Issues:*\n\n";
           const mentions = [];
+          const mentionIds = new Set();
+          
+          const allContactIds = new Set();
+          for (const i of list) {
+            if (i.assignedIds && i.assignedIds.length > 0) {
+              i.assignedIds.forEach(id => allContactIds.add(id));
+            }
+            if (i.creator) allContactIds.add(i.creator);
+          }
+          
+          const contactMap = new Map();
+          const contactPromises = Array.from(allContactIds).map(async id => {
+            const contact = await getCachedContact(id);
+            if (contact) contactMap.set(id, contact);
+          });
+          await Promise.all(contactPromises);
           
           for (const i of list) {
             let assigned = "\nUnassigned";
@@ -195,12 +228,14 @@ $issue complete 2`;
             if (i.assignedIds && i.assignedIds.length > 0) {
               const assignedNames = [];
               for (const assignedId of i.assignedIds) {
-                try {
-                  const assignedContact = await client.getContactById(assignedId);
-                  assignedNames.push(`@${assignedContact.number}`);
-                  mentions.push(assignedContact);
-                } catch (e) {
-                  console.error(`Failed to get contact ${assignedId}:`, e);
+                const contact = contactMap.get(assignedId);
+                if (contact) {
+                  assignedNames.push(`@${contact.number}`);
+                  if (!mentionIds.has(assignedId)) {
+                    mentions.push(contact);
+                    mentionIds.add(assignedId);
+                  }
+                } else {
                   assignedNames.push(assignedId);
                 }
               }
@@ -208,14 +243,14 @@ $issue complete 2`;
             }
             
             if (i.creator) {
-              try {
-                const creatorContact = await client.getContactById(i.creator);
-                creator = `\nCreated by: @${creatorContact.number}`;
-                if (!mentions.find(m => m.id._serialized === creatorContact.id._serialized)) {
-                  mentions.push(creatorContact);
+              const contact = contactMap.get(i.creator);
+              if (contact) {
+                creator = `\nCreated by: @${contact.number}`;
+                if (!mentionIds.has(i.creator)) {
+                  mentions.push(contact);
+                  mentionIds.add(i.creator);
                 }
-              } catch (e) {
-                console.error(`Failed to get creator contact ${i.creator}:`, e);
+              } else {
                 creator = `\nCreated by: ${i.creator}`;
               }
             }
@@ -234,18 +269,36 @@ $issue complete 2`;
         } else {
           let lines = "*Closed Issues:*\n\n";
           const mentions = [];
+          const mentionIds = new Set();
+          
+          const allContactIds = new Set();
+          for (const i of list) {
+            if (i.closedBy) allContactIds.add(i.closedBy);
+            if (i.assignedIds && i.assignedIds.length > 0) {
+              i.assignedIds.forEach(id => allContactIds.add(id));
+            }
+          }
+          
+          const contactMap = new Map();
+          const contactPromises = Array.from(allContactIds).map(async id => {
+            const contact = await getCachedContact(id);
+            if (contact) contactMap.set(id, contact);
+          });
+          await Promise.all(contactPromises);
           
           for (const i of list) {
             let completedBy = "";
             let assigned = "";
             
             if (i.closedBy) {
-              try {
-                const closerContact = await client.getContactById(i.closedBy);
-                completedBy = `\nCompleted by: @${closerContact.number}`;
-                mentions.push(closerContact);
-              } catch (e) {
-                console.error(`Failed to get closer contact ${i.closedBy}:`, e);
+              const contact = contactMap.get(i.closedBy);
+              if (contact) {
+                completedBy = `\nCompleted by: @${contact.number}`;
+                if (!mentionIds.has(i.closedBy)) {
+                  mentions.push(contact);
+                  mentionIds.add(i.closedBy);
+                }
+              } else {
                 completedBy = `\nCompleted by: ${i.closedBy}`;
               }
             }
@@ -253,14 +306,14 @@ $issue complete 2`;
             if (i.assignedIds && i.assignedIds.length > 0) {
               const assignedNames = [];
               for (const assignedId of i.assignedIds) {
-                try {
-                  const assignedContact = await client.getContactById(assignedId);
-                  assignedNames.push(`@${assignedContact.number}`);
-                  if (!mentions.find(m => m.id._serialized === assignedContact.id._serialized)) {
-                    mentions.push(assignedContact);
+                const contact = contactMap.get(assignedId);
+                if (contact) {
+                  assignedNames.push(`@${contact.number}`);
+                  if (!mentionIds.has(assignedId)) {
+                    mentions.push(contact);
+                    mentionIds.add(assignedId);
                   }
-                } catch (e) {
-                  console.error(`Failed to get assigned contact ${assignedId}:`, e);
+                } else {
                   assignedNames.push(assignedId);
                 }
               }
@@ -308,22 +361,15 @@ $issue complete 2`;
         else if (msg.mentionedIds && msg.mentionedIds.length > 0) {
           const ok = assignLocalIssue(id, msg.mentionedIds);
           if (ok) {
-            const mentionedContacts = [];
-            const names = [];
+            const contacts = await Promise.all(
+              msg.mentionedIds.map(id => getCachedContact(id))
+            );
             
-            for (const mentionedId of msg.mentionedIds) {
-              try {
-                const mentionedContact = await client.getContactById(mentionedId);
-                mentionedContacts.push(mentionedContact);
-                names.push(`@${mentionedContact.number}`);
-              } catch (e) {
-                console.error(`Failed to get mentioned contact ${mentionedId}:`, e);
-                names.push(mentionedId);
-              }
-            }
+            const validContacts = contacts.filter(c => c !== null);
+            const names = validContacts.map(c => `@${c.number}`);
             
             await chat.sendMessage(`Assigned issue #${id} to ${names.join(", ")}`, {
-              mentions: mentionedContacts
+              mentions: validContacts
             });
           } else {
             await chat.sendMessage(`Issue #${id} not found`);
@@ -343,22 +389,15 @@ $issue complete 2`;
         if (msg.mentionedIds && msg.mentionedIds.length > 0) {
           const ok = unassignSpecificPeople(id, msg.mentionedIds);
           if (ok) {
-            const names = [];
-            const mentionedContacts = [];
+            const contacts = await Promise.all(
+              msg.mentionedIds.map(id => getCachedContact(id))
+            );
             
-            for (const mentionedId of msg.mentionedIds) {
-              try {
-                const mentionedContact = await client.getContactById(mentionedId);
-                mentionedContacts.push(mentionedContact);
-                names.push(`@${mentionedContact.number}`);
-              } catch (e) {
-                console.error(`Failed to get mentioned contact ${mentionedId}:`, e);
-                names.push(mentionedId);
-              }
-            }
+            const validContacts = contacts.filter(c => c !== null);
+            const names = validContacts.map(c => `@${c.number}`);
             
             await chat.sendMessage(`Removed ${names.join(", ")} from issue #${id}`, {
-              mentions: mentionedContacts
+              mentions: validContacts
             });
           } else {
             await chat.sendMessage(`Issue #${id} not found or person(s) not assigned`);
