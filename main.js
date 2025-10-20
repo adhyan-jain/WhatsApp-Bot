@@ -40,19 +40,17 @@ const clientConfig = {
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
-    executablePath: require('puppeteer').executablePath(),
+    executablePath: '/usr/bin/chromium-browser', // Render system Chrome
     args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-software-rasterizer",
-      "--disable-background-timer-throttling",
-      "--disable-renderer-backgrounding",
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions'
     ],
   },
 };
+
 
 if (isRender) {
   try {
