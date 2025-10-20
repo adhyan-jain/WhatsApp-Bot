@@ -41,16 +41,17 @@ const clientConfig = {
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
+    ignoreHTTPSErrors: true,
+    timeout: 0,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--disable-extensions"
-    ],
-  },
+    ]
+  }
 };
-
 
 if (isRender) {
   try {
