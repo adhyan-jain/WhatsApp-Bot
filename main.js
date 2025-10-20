@@ -1,18 +1,46 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
-const puppeteer = require("puppeteer"); // <-- add this line
+const puppeteer = require("puppeteer");
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
+const express = require("express");
 
 const isRender = process.env.RENDER === "true";
+const PORT = process.env.PORT || 3000;
 
 const OWNER_NUMBER = process.env.OWNER_NUMBER;
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("WhatsApp Bot is running!");
+});
+
+app.get("/health", (req, res) => {
+  const status = {
+    status: "running",
+    whatsappReady: client.info ? true : false,
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  };
+  res.json(status);
+});
+
+app.get("/qr", (req, res) => {
+  res.send("Check logs for QR code or use /health to see status");
+});
+
+app.listen(PORT, () => {
+  console.log(`HTTP server listening on port ${PORT}`);
+  console.log(`Visit: https://your-app-name.onrender.com to keep alive`);
+});
+
 
 const clientConfig = {
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
-    executablePath: require('puppeteer').executablePath(), // <-- important
+    executablePath: require('puppeteer').executablePath(),
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -27,7 +55,12 @@ const clientConfig = {
 };
 
 if (isRender) {
-  clientConfig.puppeteer.executablePath = "/usr/bin/chromium";
+  try {
+    const puppeteerPath = require('puppeteer').executablePath();
+    clientConfig.puppeteer.executablePath = puppeteerPath;
+  } catch (e) {
+    console.log("Puppeteer chrome not found, will try to download");
+  }
   clientConfig.puppeteer.args.push("--no-zygote", "--single-process");
   clientConfig.puppeteer.ignoreHTTPSErrors = true;
   clientConfig.puppeteer.timeout = 0;
