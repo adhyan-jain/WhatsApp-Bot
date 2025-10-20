@@ -40,7 +40,7 @@ const puppeteer = require("puppeteer");
 const clientConfig = {
   authStrategy: new LocalAuth(),
   puppeteer: {
-    headless: true,
+    headless: "new", // use the modern headless mode
     ignoreHTTPSErrors: true,
     timeout: 0,
     args: [
@@ -48,10 +48,14 @@ const clientConfig = {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--disable-extensions"
-    ]
-  }
+      "--disable-extensions",
+      "--no-zygote",
+      "--single-process"
+    ],
+    executablePath: puppeteer.executablePath(), // always use Puppeteer's Chromium
+  },
 };
+
 
 if (isRender) {
   try {
