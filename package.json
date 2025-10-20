@@ -5,8 +5,8 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node main.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "prestart": "apt-get update && apt-get install -y chromium",
+    "start": "node main.js"
   },
   "keywords": [
     "whatsapp",
@@ -20,7 +20,8 @@
   "dependencies": {
     "@octokit/rest": "^21.0.2",
     "dotenv": "^17.2.3",
-    "puppeteer": "^23.6.1",
+    "googleapis": "^164.0.0",
+    "puppeteer": "^23.11.1",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.1"
   }

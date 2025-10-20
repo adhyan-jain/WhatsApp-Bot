@@ -1,24 +1,42 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
+const puppeteer = require("puppeteer"); // <-- add this line
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
 
-let OWNER_NUMBER = process.env.OWNER_NUMBER;
+const isRender = process.env.RENDER === "true";
 
-const client = new Client({
+const OWNER_NUMBER = process.env.OWNER_NUMBER;
+
+const clientConfig = {
   authStrategy: new LocalAuth(),
   puppeteer: {
-    headless: false,
-    executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    headless: true,
+    executablePath: require('puppeteer').executablePath(), // <-- important
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
+      "--disable-gpu",
       "--disable-extensions",
       "--disable-software-rasterizer",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
     ],
   },
+};
+
+if (isRender) {
+  clientConfig.puppeteer.executablePath = "/usr/bin/chromium";
+  clientConfig.puppeteer.args.push("--no-zygote", "--single-process");
+  clientConfig.puppeteer.ignoreHTTPSErrors = true;
+  clientConfig.puppeteer.timeout = 0;
+}
+
+const client = new Client(clientConfig);
+client.initialize().catch((err) => {
+  console.error("Failed to initialize client:", err);
+  process.exit(1);
 });
 
 const contactCache = new Map();
@@ -27,19 +45,25 @@ const CACHE_DURATION = 5 * 60 * 1000;
 async function getCachedContact(id) {
   const now = Date.now();
   const cached = contactCache.get(id);
-  
-  if (cached && (now - cached.timestamp) < CACHE_DURATION) {
+
+  if (cached && now - cached.timestamp < CACHE_DURATION) {
     return cached.contact;
   }
-  
+
   try {
     const contact = await client.getContactById(id);
-    contactCache.set(id, { contact, timestamp: now });
-    return contact;
+    if (contact) {
+      contactCache.set(id, { contact, timestamp: now });
+      return contact;
+    }
   } catch (e) {
-    console.error(`Failed to get contact ${id}:`, e);
-    return null;
+    if (e.message && e.message.includes("Target closed")) {
+      console.error("Browser connection lost, skipping contact fetch");
+      return null;
+    }
+    console.error(`Failed to get contact ${id}:`, e.message || e);
   }
+  return null;
 }
 
 client.on("qr", (qr) => {
@@ -54,7 +78,7 @@ client.on("ready", () => {
 
 client.on("message_create", async (msg) => {
   console.log("From:", msg.from, "Body:", msg.body);
-  
+
   if (msg.body === "$help") {
     const helpText = `*Issue Tracker Commands*
 
@@ -72,6 +96,7 @@ $issue assign <id> @mention1 @mention2 - Assign to multiple people
 $issue unassign <id> - Remove all assignments from issue
 $issue unassign <id> @mention - Remove specific person from issue
 $issue complete <id> - Mark issue as complete
+$issue close <id> - Mark issue as complete (alias)
 $issue delete <id> - Delete an issue
 
 *Admin Only:*
@@ -85,7 +110,7 @@ $issue assign 3 self
 $issue assign 5 @Adhyan @Krishang
 $issue unassign 5 @Adhyan
 $issue complete 2`;
-    
+
     const chat = await msg.getChat();
     await chat.sendMessage(helpText);
     return;
@@ -106,7 +131,9 @@ $issue complete 2`;
         if (parts[1].toLowerCase() === "jc") mode = "nonadmin";
         else if (parts[1].toLowerCase() === "sc") mode = "admin";
         else {
-          await chat.sendMessage('Usage: $everyone [jc|sc] - jc = non-admins, sc = admins');
+          await chat.sendMessage(
+            "Usage: $everyone [jc|sc] - jc = non-admins, sc = admins"
+          );
           return;
         }
       }
@@ -114,7 +141,7 @@ $issue complete 2`;
       let senderId = msg.author || msg.from;
       console.log("Sender ID:", senderId);
       console.log("Owner Number:", OWNER_NUMBER);
-      
+
       if (senderId !== OWNER_NUMBER && !msg.fromMe) {
         await msg.reply("Only the bot owner can use this command.");
         return;
@@ -123,40 +150,50 @@ $issue complete 2`;
       const toMention = [];
       for (const p of chat.participants) {
         const isAdmin = !!(p.isAdmin || p.isSuperAdmin);
-        if (mode === "all" || (mode === "admin" && isAdmin) || (mode === "nonadmin" && !isAdmin)) {
+        if (
+          mode === "all" ||
+          (mode === "admin" && isAdmin) ||
+          (mode === "nonadmin" && !isAdmin)
+        ) {
           const id = p.id && p.id._serialized ? p.id._serialized : p.id;
           if (id) toMention.push(id);
         }
       }
 
       if (toMention.length === 0) {
-        await chat.sendMessage('No members matched that filter.');
+        await chat.sendMessage("No members matched that filter.");
         return;
       }
 
       const mentionContacts = await Promise.all(
-        toMention.map(id => getCachedContact(id))
+        toMention.map((id) => getCachedContact(id))
       );
-      
-      const validContacts = mentionContacts.filter(c => c !== null);
+
+      const validContacts = mentionContacts.filter((c) => c !== null);
 
       if (validContacts.length === 0) {
-        await chat.sendMessage('Could not resolve any contacts.');
+        await chat.sendMessage("Could not resolve any contacts.");
         return;
       }
 
       let mentionText = "";
       validContacts.forEach((contact) => {
-        mentionText += `@${contact.number || (contact.id && contact.id.user) || contact.id} `;
+        mentionText += `@${
+          contact.number || (contact.id && contact.id.user) || contact.id
+        } `;
       });
 
       await chat.sendMessage(mentionText, { mentions: validContacts });
-      console.log(`Successfully mentioned ${mode} members (${validContacts.length})`);
+      console.log(
+        `Successfully mentioned ${mode} members (${validContacts.length})`
+      );
     } catch (err) {
       console.error("Error in $everyone command:", err);
       try {
         const chat = await msg.getChat();
-        await chat.sendMessage("An error occurred while processing the command");
+        await chat.sendMessage(
+          "An error occurred while processing the command"
+        );
       } catch (e) {
         console.error("Failed to send error message:", e);
       }
@@ -176,17 +213,18 @@ $issue complete 2`;
           await chat.sendMessage("Usage: $issue add title here");
           return;
         }
-        
+
         const creator = msg.author || msg.from;
         const contact = await msg.getContact();
-        
+
         const newIssue = addLocalIssue(title, creator);
-        await chat.sendMessage(`Created issue #${newIssue.id}: ${newIssue.title}\nCreated by: @${contact.number}`, {
-          mentions: [contact]
-        });
-      } 
-      
-      else if (sub === "delete") {
+        await chat.sendMessage(
+          `Created issue #${newIssue.id}: ${newIssue.title}\nCreated by: @${contact.number}`,
+          {
+            mentions: [contact],
+          }
+        );
+      } else if (sub === "delete") {
         const id = parts[2];
         if (!id) {
           await chat.sendMessage("Usage: $issue delete <id>");
@@ -195,9 +233,7 @@ $issue complete 2`;
         const ok = deleteLocalIssue(id);
         if (ok) await chat.sendMessage(`Deleted issue #${id}`);
         else await chat.sendMessage(`Issue #${id} not found`);
-      } 
-      
-      else if (sub === "list") {
+      } else if (sub === "list") {
         const list = listLocalIssues();
         if (list.length === 0) {
           await chat.sendMessage("No open issues");
@@ -205,26 +241,26 @@ $issue complete 2`;
           let lines = "*Open Issues:*\n\n";
           const mentions = [];
           const mentionIds = new Set();
-          
+
           const allContactIds = new Set();
           for (const i of list) {
             if (i.assignedIds && i.assignedIds.length > 0) {
-              i.assignedIds.forEach(id => allContactIds.add(id));
+              i.assignedIds.forEach((id) => allContactIds.add(id));
             }
             if (i.creator) allContactIds.add(i.creator);
           }
-          
+
           const contactMap = new Map();
-          const contactPromises = Array.from(allContactIds).map(async id => {
+          const contactPromises = Array.from(allContactIds).map(async (id) => {
             const contact = await getCachedContact(id);
             if (contact) contactMap.set(id, contact);
           });
           await Promise.all(contactPromises);
-          
+
           for (const i of list) {
             let assigned = "\nUnassigned";
             let creator = "";
-            
+
             if (i.assignedIds && i.assignedIds.length > 0) {
               const assignedNames = [];
               for (const assignedId of i.assignedIds) {
@@ -241,7 +277,7 @@ $issue complete 2`;
               }
               assigned = `\nAssigned to: ${assignedNames.join(", ")}`;
             }
-            
+
             if (i.creator) {
               const contact = contactMap.get(i.creator);
               if (contact) {
@@ -254,15 +290,13 @@ $issue complete 2`;
                 creator = `\nCreated by: ${i.creator}`;
               }
             }
-            
+
             lines += `#${i.id}: ${i.title}${assigned}${creator}\n\n`;
           }
-          
+
           await chat.sendMessage(lines, { mentions });
         }
-      } 
-      
-      else if (sub === "closed") {
+      } else if (sub === "closed") {
         const list = listClosedIssues();
         if (list.length === 0) {
           await chat.sendMessage("No closed issues");
@@ -270,26 +304,26 @@ $issue complete 2`;
           let lines = "*Closed Issues:*\n\n";
           const mentions = [];
           const mentionIds = new Set();
-          
+
           const allContactIds = new Set();
           for (const i of list) {
             if (i.closedBy) allContactIds.add(i.closedBy);
             if (i.assignedIds && i.assignedIds.length > 0) {
-              i.assignedIds.forEach(id => allContactIds.add(id));
+              i.assignedIds.forEach((id) => allContactIds.add(id));
             }
           }
-          
+
           const contactMap = new Map();
-          const contactPromises = Array.from(allContactIds).map(async id => {
+          const contactPromises = Array.from(allContactIds).map(async (id) => {
             const contact = await getCachedContact(id);
             if (contact) contactMap.set(id, contact);
           });
           await Promise.all(contactPromises);
-          
+
           for (const i of list) {
             let completedBy = "";
             let assigned = "";
-            
+
             if (i.closedBy) {
               const contact = contactMap.get(i.closedBy);
               if (contact) {
@@ -302,7 +336,7 @@ $issue complete 2`;
                 completedBy = `\nCompleted by: ${i.closedBy}`;
               }
             }
-            
+
             if (i.assignedIds && i.assignedIds.length > 0) {
               const assignedNames = [];
               for (const assignedId of i.assignedIds) {
@@ -319,15 +353,13 @@ $issue complete 2`;
               }
               assigned = `\nWas assigned to: ${assignedNames.join(", ")}`;
             }
-            
+
             lines += `#${i.id}: ${i.title}${completedBy}${assigned}\n\n`;
           }
-          
+
           await chat.sendMessage(lines, { mentions });
         }
-      } 
-      
-      else if (sub === "my") {
+      } else if (sub === "my") {
         const senderId = msg.author || msg.from;
         const items = getIssuesAssignedTo(senderId);
         if (items.length === 0) {
@@ -339,17 +371,17 @@ $issue complete 2`;
           });
           await chat.sendMessage(lines);
         }
-      } 
-      
-      else if (sub === "assign") {
+      } else if (sub === "assign") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage("Usage: $issue assign <id> self OR $issue assign <id> @mention1 @mention2");
+          await chat.sendMessage(
+            "Usage: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
+          );
           return;
         }
 
         const senderId = msg.author || msg.from;
-        
+
         if (parts[3] === "self") {
           const ok = assignLocalIssue(id, [senderId]);
           if (ok) {
@@ -357,73 +389,83 @@ $issue complete 2`;
           } else {
             await chat.sendMessage(`Issue #${id} not found`);
           }
-        }
-        else if (msg.mentionedIds && msg.mentionedIds.length > 0) {
+        } else if (msg.mentionedIds && msg.mentionedIds.length > 0) {
           const ok = assignLocalIssue(id, msg.mentionedIds);
           if (ok) {
             const contacts = await Promise.all(
-              msg.mentionedIds.map(id => getCachedContact(id))
+              msg.mentionedIds.map((id) => getCachedContact(id))
             );
-            
-            const validContacts = contacts.filter(c => c !== null);
-            const names = validContacts.map(c => `@${c.number}`);
-            
-            await chat.sendMessage(`Assigned issue #${id} to ${names.join(", ")}`, {
-              mentions: validContacts
-            });
+
+            const validContacts = contacts.filter((c) => c !== null);
+            const names = validContacts.map((c) => `@${c.number}`);
+
+            await chat.sendMessage(
+              `Assigned issue #${id} to ${names.join(", ")}`,
+              {
+                mentions: validContacts,
+              }
+            );
           } else {
             await chat.sendMessage(`Issue #${id} not found`);
           }
         } else {
-          await chat.sendMessage("Please use: $issue assign <id> self OR $issue assign <id> @mention1 @mention2");
+          await chat.sendMessage(
+            "Please use: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
+          );
         }
-      } 
-      
-      else if (sub === "unassign") {
+      } else if (sub === "unassign") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage("Usage: $issue unassign <id> OR $issue unassign <id> @mention");
+          await chat.sendMessage(
+            "Usage: $issue unassign <id> OR $issue unassign <id> @mention"
+          );
           return;
         }
-        
+
         if (msg.mentionedIds && msg.mentionedIds.length > 0) {
           const ok = unassignSpecificPeople(id, msg.mentionedIds);
           if (ok) {
             const contacts = await Promise.all(
-              msg.mentionedIds.map(id => getCachedContact(id))
+              msg.mentionedIds.map((id) => getCachedContact(id))
             );
-            
-            const validContacts = contacts.filter(c => c !== null);
-            const names = validContacts.map(c => `@${c.number}`);
-            
-            await chat.sendMessage(`Removed ${names.join(", ")} from issue #${id}`, {
-              mentions: validContacts
-            });
+
+            const validContacts = contacts.filter((c) => c !== null);
+            const names = validContacts.map((c) => `@${c.number}`);
+
+            await chat.sendMessage(
+              `Removed ${names.join(", ")} from issue #${id}`,
+              {
+                mentions: validContacts,
+              }
+            );
           } else {
-            await chat.sendMessage(`Issue #${id} not found or person(s) not assigned`);
+            await chat.sendMessage(
+              `Issue #${id} not found or person(s) not assigned`
+            );
           }
         } else {
           const ok = unassignLocalIssue(id);
-          if (ok) await chat.sendMessage(`Unassigned all people from issue #${id}`);
+          if (ok)
+            await chat.sendMessage(`Unassigned all people from issue #${id}`);
           else await chat.sendMessage(`Issue #${id} not found`);
         }
-      } 
-      
-      else if (sub === "complete") {
+      } else if (sub === "complete" || sub === "close") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage("Usage: $issue complete <id>");
+          await chat.sendMessage(
+            "Usage: $issue complete <id> OR $issue close <id>"
+          );
           return;
         }
         const closerId = msg.author || msg.from;
-        
+
         const ok = closeLocalIssue(id, closerId);
         if (ok) await chat.sendMessage(`Completed issue #${id}`);
         else await chat.sendMessage(`Issue #${id} not found`);
-      } 
-      
-      else {
-        await chat.sendMessage("Unknown command. Use $help to see all commands.");
+      } else {
+        await chat.sendMessage(
+          "Unknown command. Use $help to see all commands."
+        );
       }
     } catch (err) {
       console.error("Issue command error:", err);
@@ -459,7 +501,9 @@ try {
       issuesStore.closed = (parsed.closed || []).map(migrateIssue);
       issuesStore.nextId = parsed.nextId || computeNextId();
     }
-    console.log(`Loaded ${issuesStore.open.length} open issues and ${issuesStore.closed.length} closed issues`);
+    console.log(
+      `Loaded ${issuesStore.open.length} open issues and ${issuesStore.closed.length} closed issues`
+    );
   }
 } catch (e) {
   console.error("Error loading issues:", e);
@@ -544,11 +588,11 @@ function listClosedIssues() {
 function assignLocalIssue(id, assignedIds) {
   const issue = issuesStore.open.find((i) => i.id === id);
   if (!issue) return false;
-  
+
   const existingIds = new Set(issue.assignedIds || []);
-  assignedIds.forEach(id => existingIds.add(id));
+  assignedIds.forEach((id) => existingIds.add(id));
   issue.assignedIds = Array.from(existingIds);
-  
+
   saveLocalIssues();
   return true;
 }
@@ -564,18 +608,18 @@ function unassignLocalIssue(id) {
 function unassignSpecificPeople(id, peopleIds) {
   const issue = issuesStore.open.find((i) => i.id === id);
   if (!issue) return false;
-  
+
   issue.assignedIds = (issue.assignedIds || []).filter(
-    assignedId => !peopleIds.includes(assignedId)
+    (assignedId) => !peopleIds.includes(assignedId)
   );
-  
+
   saveLocalIssues();
   return true;
 }
 
 function getIssuesAssignedTo(whatsappId) {
-  return issuesStore.open.filter((i) => 
-    i.assignedIds && i.assignedIds.includes(whatsappId)
+  return issuesStore.open.filter(
+    (i) => i.assignedIds && i.assignedIds.includes(whatsappId)
   );
 }
 
@@ -589,5 +633,3 @@ function closeLocalIssue(id, closerId) {
   saveLocalIssues();
   return true;
 }
-
-client.initialize();

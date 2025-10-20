@@ -1,6 +1,2 @@
-2025/10/19-17:31:02.631 ef18 Reusing MANIFEST D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
-2025/10/19-17:31:02.638 ef18 Recovering log #83
-2025/10/19-17:31:02.640 ef18 Reusing old log D:\whatsapp-bot\.wwebjs_auth\session\Default\Local Storage\leveldb/000083.log 
-2025/10/19-17:41:11.962 f82c Level-0 table #88: started
-2025/10/19-17:41:11.967 f82c Level-0 table #88: 12801 bytes OK
-2025/10/19-17:41:11.970 f82c Delete type=0 #83
+2025/10/20-16:22:26.941 61fc Creating DB D:\whatsapp-bot - Copy\.wwebjs_auth\session\Default\Local Storage\leveldb since it was missing.
+2025/10/20-16:22:26.957 61fc Reusing MANIFEST D:\whatsapp-bot - Copy\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001

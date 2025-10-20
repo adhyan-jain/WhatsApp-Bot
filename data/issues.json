@@ -5,79 +5,136 @@
       "title": "\"Set up the old dashboard\"",
       "assignedId": null,
       "createdAt": "2025-10-19T07:00:39.102Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": [
+        "4037487415533@lid",
+        "200201394507780@lid"
+      ]
     },
     {
       "id": "2",
       "title": "make task submission wireframe (accommodate for the schema)",
       "assignedId": null,
       "createdAt": "2025-10-19T07:21:11.719Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": []
     },
     {
       "id": "3",
       "title": "make prisma create functions for Form submission and response for each question",
       "assignedId": null,
       "createdAt": "2025-10-19T07:23:35.474Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": [
+        "917404243119@c.us"
+      ]
     },
     {
       "id": "4",
       "title": "create wire frame for multiple correct answers and single correct answer",
-      "assignedId": "207236550930675@lid",
       "createdAt": "2025-10-19T07:25:29.658Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": [
+        "207236550930675@lid"
+      ]
     },
     {
       "id": "5",
       "title": "create-wireframe for form Validation ruleType === \"required\"",
       "assignedId": null,
       "createdAt": "2025-10-19T07:28:12.893Z",
-      "creator": "200201394507780@lid"
-    },
-    {
-      "id": "6",
-      "title": "update the ui and forms page logic to handle schema better",
-      "assignedId": null,
-      "createdAt": "2025-10-19T07:29:54.918Z",
-      "creator": "32195125223475@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": [
+        "101004846579737@lid",
+        "918095207098@c.us"
+      ]
     },
     {
       "id": "7",
       "title": "\"create-basic-wireframe for meet scheduling accommodate for the schema \"",
-      "assignedId": "207236550930675@lid",
       "createdAt": "2025-10-19T07:30:36.102Z",
-      "creator": "200201394507780@lid"
-    },
-    {
-      "id": "8",
-      "title": "create prisma server actions to create new meet_user",
-      "assignedId": null,
-      "createdAt": "2025-10-19T07:32:25.705Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": []
     },
     {
       "id": "9",
       "title": "\"add agnostic server action to check for mcq and scq enums and integrate it with the wireframe (needs #4 to be closed) \"",
       "assignedId": null,
       "createdAt": "2025-10-19T07:34:04.186Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": []
     },
     {
       "id": "10",
       "title": "\"Add prisma.$transactions to the create/update queries that really really need it\"",
       "assignedId": null,
       "createdAt": "2025-10-19T09:33:02.370Z",
-      "creator": "200201394507780@lid"
+      "creator": "200201394507780@lid",
+      "assignedIds": []
+    },
+    {
+      "id": "12",
+      "title": "add browser forward and backward stack navigation use left and right arrows to do so",
+      "assignedIds": [
+        "30271097319525@lid"
+      ],
+      "createdAt": "2025-10-19T19:41:30.230Z",
+      "creator": "32195125223475@lid"
+    },
+    {
+      "id": "13",
+      "title": "currently when the user presses the x on a tab nothing happens instead that tab should close and a new one opens",
+      "assignedIds": [
+        "276205588721720@lid"
+      ],
+      "createdAt": "2025-10-19T19:47:41.360Z",
+      "creator": "32195125223475@lid"
+    },
+    {
+      "id": "14",
+      "title": "frontend: add a functional refresh button in the navigation bar, for rendered pages",
+      "assignedIds": [
+        "207236550930675@lid"
+      ],
+      "createdAt": "2025-10-19T21:23:30.844Z",
+      "creator": "207236550930675@lid"
+    }
+  ],
+  "closed": [
+    {
+      "id": "8",
+      "title": "create prisma server actions to create new meet_user",
+      "assignedId": null,
+      "createdAt": "2025-10-19T07:32:25.705Z",
+      "creator": "200201394507780@lid",
+      "assignedIds": [],
+      "closedAt": "2025-10-19T18:09:07.926Z",
+      "closedBy": "127324372643929:40@lid"
+    },
+    {
+      "id": "6",
+      "title": "update the ui and forms page logic to handle schema better",
+      "assignedId": null,
+      "createdAt": "2025-10-19T07:29:54.918Z",
+      "creator": "32195125223475@lid",
+      "assignedIds": [
+        "32195125223475@lid"
+      ],
+      "closedAt": "2025-10-20T09:22:23.172Z",
+      "closedBy": "32195125223475@lid"
     },
     {
       "id": "11",
       "title": "d  right now this form is accessed only thorough /forms, we want to be able to see it through our browser window. \n\nMake a custom domain (forms.com) and when someone types forms.com in the search bar it should open this form",
-      "assignedId": "159102869180440@lid",
       "createdAt": "2025-10-19T10:29:48.739Z",
-      "creator": "32195125223475@lid"
+      "creator": "32195125223475@lid",
+      "assignedIds": [
+        "159102869180440@lid",
+        "32195125223475@lid"
+      ],
+      "closedAt": "2025-10-20T09:22:41.095Z",
+      "closedBy": "32195125223475@lid"
     }
   ],
-  "closed": [],
-  "nextId": 12
+  "nextId": 15
 }

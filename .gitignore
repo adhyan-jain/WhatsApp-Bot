@@ -22,6 +22,7 @@ local_auth/*
 
 .wwebjs_cache/
 .wwebjs_auth/session/
+.wwebjs_auth/
 
 # VS Code
 .vscode/

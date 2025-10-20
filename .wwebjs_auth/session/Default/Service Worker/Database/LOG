@@ -1,3 +1,2 @@
-2025/10/19-17:31:02.586 12324 Reusing MANIFEST D:\whatsapp-bot\.wwebjs_auth\session\Default\Service Worker\Database/MANIFEST-000001
-2025/10/19-17:31:02.591 12324 Recovering log #3
-2025/10/19-17:31:02.592 12324 Reusing old log D:\whatsapp-bot\.wwebjs_auth\session\Default\Service Worker\Database/000003.log 
+2025/10/20-16:22:31.042 7614 Creating DB D:\whatsapp-bot - Copy\.wwebjs_auth\session\Default\Service Worker\Database since it was missing.
+2025/10/20-16:22:31.048 7614 Reusing MANIFEST D:\whatsapp-bot - Copy\.wwebjs_auth\session\Default\Service Worker\Database/MANIFEST-000001
