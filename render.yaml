@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: whatsapp-bot
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: RENDER
+        value: true
+      - key: OWNER_NUMBER
+        sync: false
+        # Set this to your WhatsApp number in format: countrycode+number@c.us
+        # Example: 13105551234@c.us
+    disk:
+      name: whatsapp-data
+      mountPath: /app/data
+      sizeGB: 1
+    healthCheckPath: /health
+    autoDeploy: true

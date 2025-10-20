@@ -6,13 +6,20 @@ const express = require("express");
 
 const isRender = process.env.RENDER === "true";
 const PORT = process.env.PORT || 3000;
-
 const OWNER_NUMBER = process.env.OWNER_NUMBER;
+
+// Validate OWNER_NUMBER format
+if (OWNER_NUMBER && !OWNER_NUMBER.includes("@c.us")) {
+  console.warn(
+    "OWNER_NUMBER should be in format: [country_code][number]@c.us"
+  );
+  console.warn("   Example: 13105551234@c.us");
+}
 
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Bot is running!");
+  res.send("WhatsApp Bot is running. Check /health for status.");
 });
 
 app.get("/health", (req, res) => {
@@ -20,60 +27,80 @@ app.get("/health", (req, res) => {
     status: "running",
     whatsappReady: client.info ? true : false,
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    nodeVersion: process.version,
+    memoryUsage: process.memoryUsage(),
+    environment: isRender ? "render" : "local",
   };
   res.json(status);
 });
 
-app.get("/qr", (req, res) => {
-  res.send("Check logs for QR code or use /health to see status");
-});
-
 app.listen(PORT, () => {
   console.log(`HTTP server listening on port ${PORT}`);
-  console.log(`Visit: https://your-app-name.onrender.com to keep alive`);
 });
 
-
-const puppeteer = require("puppeteer");
-
-const clientConfig = {
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    headless: "new", // use the modern headless mode
-    ignoreHTTPSErrors: true,
-    timeout: 0,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--no-zygote",
-      "--single-process"
-    ],
-    executablePath: puppeteer.executablePath(), // always use Puppeteer's Chromium
-  },
+// Configure Puppeteer based on environment
+const puppeteerConfig = {
+  headless: true,
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-accelerated-2d-canvas",
+    "--no-first-run",
+    "--no-zygote",
+    "--disable-gpu",
+    "--disable-web-security",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding"
+  ],
 };
 
-
-if (isRender) {
-  try {
-    const puppeteerPath = require('puppeteer').executablePath();
-    clientConfig.puppeteer.executablePath = puppeteerPath;
-  } catch (e) {
-    console.log("Puppeteer chrome not found, will try to download");
-  }
-  clientConfig.puppeteer.args.push("--no-zygote", "--single-process");
-  clientConfig.puppeteer.ignoreHTTPSErrors = true;
-  clientConfig.puppeteer.timeout = 0;
+// Use system Chromium on Render/Docker
+if (isRender || process.env.DOCKER) {
+  puppeteerConfig.executablePath = "/usr/bin/chromium";
+  console.log("Using system Chromium");
 }
 
-const client = new Client(clientConfig);
-client.initialize().catch((err) => {
-  console.error("Failed to initialize client:", err);
-  process.exit(1);
+console.log("Initializing WhatsApp client...");
+
+const client = new Client({
+  authStrategy: new LocalAuth({
+    dataPath: "./.wwebjs_auth",
+  }),
+  puppeteer: puppeteerConfig,
+  webVersionCache: {
+    type: "remote",
+    remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
+  },
 });
+
+// Initialize with retry logic
+let initAttempts = 0;
+const maxAttempts = 3;
+
+async function initializeClient() {
+  try {
+    initAttempts++;
+    console.log(`Initialization attempt ${initAttempts}/${maxAttempts}`);
+    await client.initialize();
+  } catch (err) {
+    console.error("Failed to initialize client:", err.message);
+    
+    if (initAttempts < maxAttempts) {
+      console.log(`Retrying in 5 seconds...`);
+      setTimeout(() => initializeClient(), 5000);
+    } else {
+      console.error("Max initialization attempts reached. Exiting...");
+      process.exit(1);
+    }
+  }
+}
+
+initializeClient();
 
 const contactCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000;
@@ -93,28 +120,61 @@ async function getCachedContact(id) {
       return contact;
     }
   } catch (e) {
-    if (e.message && e.message.includes("Target closed")) {
-      console.error("Browser connection lost, skipping contact fetch");
-      return null;
-    }
     console.error(`Failed to get contact ${id}:`, e.message || e);
   }
   return null;
 }
 
+// Enhanced event handlers
 client.on("qr", (qr) => {
-  console.log("Scan this QR code to log in:");
+  console.log("\nScan this QR code to log in:");
+  console.log("=".repeat(50));
   qrcode.generate(qr, { small: true });
+  console.log("=".repeat(50));
+  console.log("\nWaiting for QR code scan...\n");
+});
+
+client.on("authenticated", () => {
+  console.log("Authentication successful!");
+});
+
+client.on("auth_failure", (msg) => {
+  console.error("Authentication failure:", msg);
+  console.log("You may need to rescan the QR code");
 });
 
 client.on("ready", () => {
+  console.log("=".repeat(50));
   console.log("WhatsApp client is ready!");
-  console.log("Your number:", client.info.wid._serialized);
+  console.log(`Your number: ${client.info.wid._serialized}`);
+  console.log(`Your name: ${client.info.pushname}`);
+  if (OWNER_NUMBER) {
+    console.log(`Owner number configured: ${OWNER_NUMBER}`);
+  } else {
+    console.warn("OWNER_NUMBER not set - admin commands will not work");
+    console.warn("Set OWNER_NUMBER to: " + client.info.wid._serialized);
+  }
+  console.log("=".repeat(50));
 });
 
-client.on("message_create", async (msg) => {
-  console.log("From:", msg.from, "Body:", msg.body);
+client.on("disconnected", (reason) => {
+  console.log("Client disconnected:", reason);
+  console.log("Attempting to reconnect...");
+});
 
+client.on("loading_screen", (percent, message) => {
+  console.log(`Loading: ${percent}% - ${message}`);
+});
+
+
+client.on("message_create", async (msg) => {
+  if (msg.from === "status@broadcast") return;
+
+  console.log(
+    `From: ${msg.from} | Body: ${msg.body.substring(0, 50)}${
+      msg.body.length > 50 ? "..." : ""
+    }`
+  );
   if (msg.body === "$help") {
     const helpText = `*Issue Tracker Commands*
 
@@ -137,7 +197,7 @@ $issue delete <id> - Delete an issue
 
 *Admin Only:*
 $everyone - Mention all group members
-$everyone jc - Mention all non admin members
+$everyone jc - Mention all non-admin members
 $everyone sc - Mention all admin members
 
 *Examples:*
@@ -147,8 +207,12 @@ $issue assign 5 @Adhyan @Krishang
 $issue unassign 5 @Adhyan
 $issue complete 2`;
 
-    const chat = await msg.getChat();
-    await chat.sendMessage(helpText);
+    try {
+      const chat = await msg.getChat();
+      await chat.sendMessage(helpText);
+    } catch (err) {
+      console.error("Error sending help:", err);
+    }
     return;
   }
 
@@ -175,8 +239,13 @@ $issue complete 2`;
       }
 
       let senderId = msg.author || msg.from;
-      console.log("Sender ID:", senderId);
-      console.log("Owner Number:", OWNER_NUMBER);
+
+      if (!OWNER_NUMBER) {
+        await msg.reply(
+          "OWNER_NUMBER not configured. Admin commands disabled."
+        );
+        return;
+      }
 
       if (senderId !== OWNER_NUMBER && !msg.fromMe) {
         await msg.reply("Only the bot owner can use this command.");
@@ -274,7 +343,7 @@ $issue complete 2`;
         if (list.length === 0) {
           await chat.sendMessage("No open issues");
         } else {
-          let lines = "*Open Issues:*\n\n";
+          let lines = `*Open Issues (${list.length}):*\n\n`;
           const mentions = [];
           const mentionIds = new Set();
 
@@ -337,7 +406,7 @@ $issue complete 2`;
         if (list.length === 0) {
           await chat.sendMessage("No closed issues");
         } else {
-          let lines = "*Closed Issues:*\n\n";
+          let lines = `*Closed Issues (${list.length}):*\n\n`;
           const mentions = [];
           const mentionIds = new Set();
 
@@ -401,7 +470,7 @@ $issue complete 2`;
         if (items.length === 0) {
           await chat.sendMessage("You have no assigned issues");
         } else {
-          let lines = "*Your Assigned Issues:*\n\n";
+          let lines = `*Your Assigned Issues (${items.length}):*\n\n`;
           items.forEach((i) => {
             lines += `#${i.id}: ${i.title}\n`;
           });
@@ -482,7 +551,9 @@ $issue complete 2`;
         } else {
           const ok = unassignLocalIssue(id);
           if (ok)
-            await chat.sendMessage(`Unassigned all people from issue #${id}`);
+            await chat.sendMessage(
+              `Unassigned all people from issue #${id}`
+            );
           else await chat.sendMessage(`Issue #${id} not found`);
         }
       } else if (sub === "complete" || sub === "close") {
@@ -515,11 +586,13 @@ $issue complete 2`;
   }
 });
 
+// Issue management functions
 const issuesFile = path.join(__dirname, "data", "issues.json");
 const dataDir = path.join(__dirname, "data");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+  console.log("Created data directory");
 }
 
 let issuesStore = { open: [], closed: [], nextId: 1 };
@@ -540,6 +613,8 @@ try {
     console.log(
       `Loaded ${issuesStore.open.length} open issues and ${issuesStore.closed.length} closed issues`
     );
+  } else {
+    console.log("No existing issues found, starting fresh");
   }
 } catch (e) {
   console.error("Error loading issues:", e);
@@ -559,6 +634,7 @@ function migrateIssue(issue) {
 function saveLocalIssues() {
   try {
     fs.writeFileSync(issuesFile, JSON.stringify(issuesStore, null, 2));
+    console.log("Issues saved successfully");
   } catch (e) {
     console.error("Error saving issues:", e);
   }
@@ -594,6 +670,7 @@ function addLocalIssue(title, creator) {
   };
   issuesStore.open.push(issue);
   saveLocalIssues();
+  console.log(`Created issue #${issue.id}: ${title}`);
   return issue;
 }
 
@@ -602,12 +679,14 @@ function deleteLocalIssue(id) {
   if (idx !== -1) {
     issuesStore.open.splice(idx, 1);
     saveLocalIssues();
+    console.log(`Deleted open issue #${id}`);
     return true;
   }
   idx = issuesStore.closed.findIndex((i) => i.id === id);
   if (idx !== -1) {
     issuesStore.closed.splice(idx, 1);
     saveLocalIssues();
+    console.log(`Deleted closed issue #${id}`);
     return true;
   }
   return false;
@@ -630,6 +709,7 @@ function assignLocalIssue(id, assignedIds) {
   issue.assignedIds = Array.from(existingIds);
 
   saveLocalIssues();
+  console.log(`Assigned issue #${id} to ${assignedIds.length} user(s)`);
   return true;
 }
 
@@ -638,6 +718,7 @@ function unassignLocalIssue(id) {
   if (!issue) return false;
   issue.assignedIds = [];
   saveLocalIssues();
+  console.log(`Unassigned all users from issue #${id}`);
   return true;
 }
 
@@ -645,11 +726,16 @@ function unassignSpecificPeople(id, peopleIds) {
   const issue = issuesStore.open.find((i) => i.id === id);
   if (!issue) return false;
 
+  const before = issue.assignedIds.length;
   issue.assignedIds = (issue.assignedIds || []).filter(
     (assignedId) => !peopleIds.includes(assignedId)
   );
+  const after = issue.assignedIds.length;
+
+  if (before === after) return false;
 
   saveLocalIssues();
+  console.log(`Removed ${before - after} user(s) from issue #${id}`);
   return true;
 }
 
@@ -667,5 +753,32 @@ function closeLocalIssue(id, closerId) {
   issue.closedBy = closerId || null;
   issuesStore.closed.push(issue);
   saveLocalIssues();
+  console.log(`Closed issue #${id}`);
   return true;
 }
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("SIGTERM received, shutting down gracefully...");
+  saveLocalIssues();
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.error("Error destroying client:", e);
+  }
+  process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+  console.log("\nSIGINT received, shutting down gracefully...");
+  saveLocalIssues();
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.error("Error destroying client:", e);
+  }
+  process.exit(0);
+});
+
+console.log("WhatsApp Issue Tracker Bot Started");
+console.log("=".repeat(50));
