@@ -1,10 +1,11 @@
+.env.local
+.env*.local
 node_modules
 npm-debug.log
 .git
 .gitignore
 README.md
-.env
 .DS_Store
-*.log
 .wwebjs_auth
-.wwebjs_cache
+data
+*.md
