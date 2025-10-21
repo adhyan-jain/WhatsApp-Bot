@@ -704,6 +704,34 @@ $issue complete 2`;
   }
 });
 
+client.on("disconnected", (reason) => {
+  console.log("Client disconnected:", reason);
+  if (reason === "LOGOUT") {
+    console.log("Logged out - manual intervention required");
+    return;
+  }
+  console.log("Attempting to reconnect in 10 seconds...");
+  setTimeout(() => {
+    client.initialize().catch(err => {
+      console.error("Reconnection failed:", err.message);
+    });
+  }, 10000);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, destroying client...');
+  client.destroy().then(() => process.exit(0));
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, destroying client...');
+  client.destroy().then(() => process.exit(0));
+});
+
 const issuesFile = path.join(__dirname, "data", "issues.json");
 const dataDir = path.join(__dirname, "data");
 
