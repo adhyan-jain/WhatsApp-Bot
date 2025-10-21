@@ -8,14 +8,6 @@ const isRender = process.env.RENDER === "true";
 const PORT = process.env.PORT || 3000;
 const OWNER_NUMBER = process.env.OWNER_NUMBER;
 
-// Validate OWNER_NUMBER format
-if (OWNER_NUMBER && !OWNER_NUMBER.includes("@c.us")) {
-  console.warn(
-    "OWNER_NUMBER should be in format: [country_code][number]@c.us"
-  );
-  console.warn("   Example: 13105551234@c.us");
-}
-
 const app = express();
 
 app.get("/", (req, res) => {
@@ -175,6 +167,7 @@ client.on("message_create", async (msg) => {
       msg.body.length > 50 ? "..." : ""
     }`
   );
+  
   if (msg.body === "$help") {
     const helpText = `*Issue Tracker Commands*
 
@@ -486,11 +479,16 @@ $issue complete 2`;
         }
 
         const senderId = msg.author || msg.from;
+        console.log(`Assign command - ID: ${id}, Sender: ${senderId}, Parts[3]: ${parts[3]}`);
 
-        if (parts[3] === "self") {
+        if (parts[3] && parts[3].toLowerCase() === "self") {
           const ok = assignLocalIssue(id, [senderId]);
+          console.log(`Assignment result: ${ok}`);
           if (ok) {
-            await chat.sendMessage(`Assigned issue #${id} to you`);
+            const contact = await msg.getContact();
+            await chat.sendMessage(`Assigned issue #${id} to @${contact.number}`, {
+              mentions: [contact]
+            });
           } else {
             await chat.sendMessage(`Issue #${id} not found`);
           }
