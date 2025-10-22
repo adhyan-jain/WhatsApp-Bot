@@ -232,6 +232,19 @@ async function getCachedContact(id) {
   return null;
 }
 
+// Helper function to get display name for any ID format
+async function getDisplayName(id) {
+  try {
+    const contact = await getCachedContact(id);
+    if (contact) {
+      return contact.pushname || contact.name || contact.number || id;
+    }
+  } catch (e) {
+    console.error(`Error getting display name for ${id}:`, e);
+  }
+  return id;
+}
+
 client.on("qr", (qr) => {
   console.log("\nScan this QR code to log in:");
   console.log("=".repeat(50));
@@ -471,7 +484,8 @@ $issue complete 2`;
               for (const assignedId of i.assignedIds) {
                 const contact = contactMap.get(assignedId);
                 if (contact) {
-                  assignedNames.push(`@${contact.number}`);
+                  const displayName = contact.pushname || contact.name || contact.number;
+                  assignedNames.push(displayName);
                   if (!mentionIds.has(assignedId)) {
                     mentions.push(contact);
                     mentionIds.add(assignedId);
@@ -486,7 +500,8 @@ $issue complete 2`;
             if (i.creator) {
               const contact = contactMap.get(i.creator);
               if (contact) {
-                creator = `\nCreated by: @${contact.number}`;
+                const displayName = contact.pushname || contact.name || contact.number;
+                creator = `\nCreated by: ${displayName}`;
                 if (!mentionIds.has(i.creator)) {
                   mentions.push(contact);
                   mentionIds.add(i.creator);
@@ -532,7 +547,8 @@ $issue complete 2`;
             if (i.closedBy) {
               const contact = contactMap.get(i.closedBy);
               if (contact) {
-                completedBy = `\nCompleted by: @${contact.number}`;
+                const displayName = contact.pushname || contact.name || contact.number;
+                completedBy = `\nCompleted by: ${displayName}`;
                 if (!mentionIds.has(i.closedBy)) {
                   mentions.push(contact);
                   mentionIds.add(i.closedBy);
@@ -547,7 +563,8 @@ $issue complete 2`;
               for (const assignedId of i.assignedIds) {
                 const contact = contactMap.get(assignedId);
                 if (contact) {
-                  assignedNames.push(`@${contact.number}`);
+                  const displayName = contact.pushname || contact.name || contact.number;
+                  assignedNames.push(displayName);
                   if (!mentionIds.has(assignedId)) {
                     mentions.push(contact);
                     mentionIds.add(assignedId);
@@ -580,7 +597,7 @@ $issue complete 2`;
         const id = parts[2];
         if (!id) {
           await chat.sendMessage(
-            "Usage: $issue assign <id> self OR $issue assign <id> @mention1 @mention2 OR $issue assign <id> lid:123@lid"
+            "Usage: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
           );
           return;
         }
@@ -588,39 +605,27 @@ $issue complete 2`;
         const senderId = msg.author || msg.from;
 
         if (parts[3] && parts[3].toLowerCase() === "self") {
-          const ok = await assignLocalIssue(id, lidIds);
+          // Assign to self
+          const ok = await assignLocalIssue(id, [senderId]);
           if (ok) {
             const contact = await msg.getContact();
-            await chat.sendMessage(`Assigned issue #${id} to @${contact.number}`, {
+            const displayName = contact.pushname || contact.name || contact.number;
+            await chat.sendMessage(`Assigned issue #${id} to ${displayName}`, {
               mentions: [contact]
             });
           } else {
             await chat.sendMessage(`Issue #${id} not found`);
           }
-        } else if (parts[3] && (parts[3].startsWith("lid:") || parts[3].includes("@lid"))) {
-          const lidIds = parts.slice(3).map(p => {
-            let lid = p.replace(/^lid:/, "");
-            if (!lid.includes("@lid")) {
-              lid = `${lid}@lid`;
-            }
-            return lid;
-          });
-          
-          const ok = await assignIssue(id, lidIds);
-          if (ok) {
-            await chat.sendMessage(`Assigned issue #${id} to ${lidIds.join(", ")}`);
-          } else {
-            await chat.sendMessage(`Issue #${id} not found`);
-          }
         } else if (msg.mentionedIds && msg.mentionedIds.length > 0) {
-          const ok = await assignIssue(id, msg.mentionedIds);
+          // Assign to mentioned users
+          const ok = await assignLocalIssue(id, msg.mentionedIds);
           if (ok) {
             const contacts = await Promise.all(
               msg.mentionedIds.map((id) => getCachedContact(id))
             );
 
             const validContacts = contacts.filter((c) => c !== null);
-            const names = validContacts.map((c) => `@${c.number}`);
+            const names = validContacts.map((c) => c.pushname || c.name || c.number);
 
             await chat.sendMessage(
               `Assigned issue #${id} to ${names.join(", ")}`,
@@ -633,7 +638,7 @@ $issue complete 2`;
           }
         } else {
           await chat.sendMessage(
-            "Please use: $issue assign <id> self OR $issue assign <id> @mention1 @mention2 OR $issue assign <id> lid:123@lid"
+            "Please use: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
           );
         }
       } else if (sub === "unassign") {
@@ -653,7 +658,7 @@ $issue complete 2`;
             );
 
             const validContacts = contacts.filter((c) => c !== null);
-            const names = validContacts.map((c) => `@${c.number}`);
+            const names = validContacts.map((c) => c.pushname || c.name || c.number);
 
             await chat.sendMessage(
               `Removed ${names.join(", ")} from issue #${id}`,
@@ -912,8 +917,6 @@ async function saveLocalIssues() {
   }
 }
 
-// Replace the initializeDataStore function in your main.js with this:
-
 async function initializeDataStore() {
   console.log("[INIT] Starting data store initialization...");
   console.log(`[INIT] sheetsAPI available: ${!!sheetsAPI}`);
@@ -1072,4 +1075,3 @@ async function closeLocalIssue(id, closerId) {
   await saveLocalIssues();
   return true;
 }
-
