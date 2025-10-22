@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     libpangocairo-1.0-0 \
     libpango-1.0-0 \
     libgtk-3-0 \
+    xdg-utils \
     wget \
     ca-certificates \
     --no-install-recommends \
@@ -58,5 +59,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD node -e "try{require('http').get('http://localhost:3000/health',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{if(!d||!d.includes('running'))process.exit(1)})}).on('error',()=>process.exit(1));}catch(e){process.exit(1);}"
 
-# Run the application
-CMD ["node", "main.js"]
+# Run the application (disable sandbox for Puppeteer inside Docker)
+CMD ["node", "--unhandled-rejections=strict", "main.js"]
