@@ -118,6 +118,9 @@ app.post("/github/webhook", async (req, res) => {
       case "pull_request":
         await handlePullRequestEvent(payload);
         break;
+      case "issue_comment":
+        await handleIssueCommentEvent(payload);
+        break;
       default:
         console.log(`Event ${event} not handled; ignoring.`);
     }
@@ -131,6 +134,8 @@ app.post("/github/webhook", async (req, res) => {
 
 const pendingMessages = [];
 let clientReady = false;
+let flushTimer = null;
+const RETRY_DELAY_MS = 5000;
 
 async function sendMessageToGroup(message) {
   if (!message) {
@@ -162,11 +167,16 @@ async function queueOrSend(message) {
     pendingMessages.push(message);
     const reason = clientReady ? "send failure" : "client not ready";
     console.log(`Queued message due to ${reason}; will retry when possible`);
+    scheduleFlush();
   }
 }
 
 async function flushPendingMessages() {
   if (!clientReady || pendingMessages.length === 0) {
+    if (pendingMessages.length === 0 && flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
     return;
   }
 
@@ -179,9 +189,26 @@ async function flushPendingMessages() {
     } catch (err) {
       console.error("Failed delivering queued message, re-queuing", err.message);
       pendingMessages.unshift(message);
+      scheduleFlush();
       break;
     }
   }
+}
+
+function scheduleFlush() {
+  if (flushTimer || pendingMessages.length === 0) {
+    return;
+  }
+
+  flushTimer = setTimeout(async () => {
+    flushTimer = null;
+    try {
+      await flushPendingMessages();
+    } catch (err) {
+      console.error("Error while flushing queued messages:", err.message);
+      scheduleFlush();
+    }
+  }, RETRY_DELAY_MS);
 }
 
 function formatIssueMessage(action, payload) {
@@ -263,6 +290,48 @@ function formatPullRequestMessage(action, payload) {
   }
 }
 
+function formatIssueCommentMessage(action, payload) {
+  const issue = payload.issue;
+  const comment = payload.comment;
+  if (!issue || !comment) {
+    return null;
+  }
+
+  const repo = payload.repository?.full_name || "unknown repo";
+  const issueNumber = issue.number;
+  const issueTitle = issue.title;
+  const commentAuthor = comment.user?.login || "someone";
+  const actor = payload.sender?.login || commentAuthor;
+  const commentUrl = comment.html_url;
+
+  const baseLines = [
+    `*💬 Issue Comment* ${repo}#${issueNumber}`,
+    `• Title: ${issueTitle}`,
+    `• Comment by: ${commentAuthor}`,
+    `• Triggered by: ${actor}`,
+    `🔗 ${commentUrl}`,
+  ];
+
+  if (action === "created") {
+    const snippet = comment.body?.trim().split("\n").slice(0, 3).join("\n");
+    if (snippet) {
+      baseLines.splice(4, 0, `• Preview: ${snippet.length > 200 ? `${snippet.slice(0, 197)}...` : snippet}`);
+    }
+    return baseLines.join("\n");
+  }
+
+  if (action === "edited") {
+    baseLines.splice(4, 0, "• Comment was edited");
+    return baseLines.join("\n");
+  }
+
+  if (action === "deleted") {
+    return `*🗑️ Issue Comment Deleted* ${repo}#${issueNumber}\n• Deleted by: ${actor}\n🔗 ${commentUrl}`;
+  }
+
+  return null;
+}
+
 async function handleIssueEvent(payload) {
   const action = payload.action;
   if (!action) {
@@ -277,6 +346,7 @@ async function handleIssueEvent(payload) {
       `Queueing WhatsApp notification for issue #${issueNumber ?? "unknown"} (${action})`
     );
     await queueOrSend(message);
+    scheduleFlush();
   } else {
     console.log(`No WhatsApp notification for issue action '${action}', ignoring.`);
   }
@@ -294,8 +364,29 @@ async function handlePullRequestEvent(payload) {
     const prNumber = payload.pull_request?.number;
     console.log(`Queueing WhatsApp notification for PR #${prNumber ?? "unknown"} (${action})`);
     await queueOrSend(message);
+    scheduleFlush();
   } else {
     console.log(`No WhatsApp notification for PR action '${action}', ignoring.`);
+  }
+}
+
+async function handleIssueCommentEvent(payload) {
+  const action = payload.action;
+  if (!action) {
+    return;
+  }
+
+  const message = formatIssueCommentMessage(action, payload);
+
+  if (message) {
+    const issueNumber = payload.issue?.number;
+    console.log(
+      `Queueing WhatsApp notification for issue comment on #${issueNumber ?? "unknown"} (${action})`
+    );
+    await queueOrSend(message);
+    scheduleFlush();
+  } else {
+    console.log(`No WhatsApp notification for issue_comment action '${action}', ignoring.`);
   }
 }
 
