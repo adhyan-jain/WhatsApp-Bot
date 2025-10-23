@@ -18,10 +18,8 @@
   "author": "Adhyan Jain",
   "license": "MIT",
   "dependencies": {
-    "@octokit/rest": "^21.0.2",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "googleapis": "^164.1.0",
     "puppeteer": "^23.11.1",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.1"
