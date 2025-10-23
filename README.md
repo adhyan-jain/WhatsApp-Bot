@@ -1,262 +1,266 @@
-# 🤖 WhatsApp Issue Tracker Bot
+# WhatsApp GitHub Integration Bot
 
-A powerful WhatsApp bot for managing issues, tasks, and team coordination directly in WhatsApp. Built with Node.js and deployed on Render using Docker.
+A powerful WhatsApp bot that integrates with GitHub webhooks to provide real-time notifications and manage issues directly from WhatsApp.
 
-![Status](https://img.shields.io/badge/status-active-success)
-![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![Docker](https://img.shields.io/badge/docker-ready-blue)
+## 🌟 Features
 
-## ✨ Features
+### GitHub Webhook Integration
+- **Real-time notifications** for GitHub events:
+  - Issues (opened, closed, assigned, unassigned, reopened, edited)
+  - Pull Requests (opened, merged, closed, reopened, edited, review requested)
+  - Issue Comments (created, edited, deleted)
+- **Auto-sync**: GitHub issues automatically sync with local issue tracker
 
-### 📋 Issue Management
-- Create, assign, and track issues in WhatsApp
-- Support for multiple assignees
-- Track issue history and completion status
-- View personal assignments with `$issue my`
+### Issue Tracker
+- Create and manage issues directly from WhatsApp
+- Assign issues to team members using @mentions
+- Set deadlines for tasks
+- Track open and closed issues
+- View your assigned issues
+- All data stored in-memory (resets on restart)
 
-### 👥 Team Coordination
-- Mention all group members with `$everyone`
-- Filter mentions by admin/non-admin
-- Assign tasks to specific team members
-- Track who created and completed issues
+## 📋 Prerequisites
 
-### 🔒 Admin Controls
-- Owner-only commands for group management
-- Secure admin verification
-- Protected mention everyone feature
+- Node.js (v16 or higher)
+- npm or yarn
+- A GitHub repository
+- A WhatsApp account
+- Docker (optional, for containerized deployment)
 
 ## 🚀 Quick Start
 
-**Deploy in 10 minutes!** See [QUICKSTART.md](./QUICKSTART.md)
+### 1. Clone the Repository
 
 ```bash
-# 1. Clone and push to GitHub
-git clone <your-repo>
-git push origin main
-
-# 2. Deploy on Render (using render.yaml)
-# 3. Scan QR code from logs
-# 4. Set OWNER_NUMBER in environment variables
-# 5. Done! 🎉
+git clone <your-repo-url>
+cd whatsapp-github-bot
 ```
 
-## 📖 Commands
+### 2. Install Dependencies
 
-### Help
-```
-$help - Show all commands
-```
-
-### Issue Management
-```
-$issue add <title>           - Create new issue
-$issue list                  - List all open issues
-$issue closed                - List completed issues
-$issue my                    - Show your assigned issues
-$issue assign <id> self      - Assign issue to yourself
-$issue assign <id> @user1 @user2  - Assign to multiple people
-$issue unassign <id>         - Remove all assignments
-$issue unassign <id> @user   - Remove specific person
-$issue complete <id>         - Mark issue as complete
-$issue delete <id>           - Delete an issue
+```bash
+npm install
 ```
 
-### Admin Commands (Owner Only)
-```
-$everyone     - Mention all group members
-$everyone jc  - Mention non-admin members only
-$everyone sc  - Mention admin members only
-```
+### 3. Configure Environment Variables
 
-## 📁 Project Structure
+Create a `.env` file in the root directory:
 
-```
-whatsapp-bot/
-├── main.js              # Main application code
-├── package.json         # Dependencies
-├── Dockerfile          # Docker container config
-├── .dockerignore       # Docker ignore rules
-├── render.yaml         # Render deployment config
-├── .env.example        # Environment variables template
-├── README.md           # This file
-├── QUICKSTART.md       # Quick deployment guide
-├── DEPLOYMENT.md       # Detailed deployment guide
-└── data/
-    └── issues.json     # Issue storage (auto-created)
+```bash
+# WhatsApp Configuration
+WHATSAPP_GROUP_ID=123456789-1234567890@g.us
+
+# GitHub Webhook Configuration
+GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
+GITHUB_REPO=username/repository  # Optional: filter events from specific repo
+
+# Server Configuration
+PORT=3000
+RENDER=false  # Set to true if deploying on Render
+
+# Docker (Optional)
+DOCKER=false  # Set to true if running in Docker
 ```
 
-## 🛠️ Technology Stack
+### 4. Get WhatsApp Group ID
 
-- **Runtime**: Node.js 20 LTS
-- **WhatsApp**: whatsapp-web.js
-- **Browser**: Puppeteer with Chromium
-- **Web Server**: Express
-- **Deployment**: Docker on Render
-- **Storage**: File-based JSON + Persistent disk
+Run the bot once to get your group ID:
 
-## 🔧 Configuration
+```bash
+npm start
+```
 
-### Environment Variables
+Scan the QR code with WhatsApp, then send a message in your target group. Check the console logs for the group ID (format: `123456789-1234567890@g.us`).
 
-| Variable | Required | Description | Example |
-|----------|----------|-------------|---------|
-| `RENDER` | Yes | Tells app it's on Render | `true` |
-| `NODE_ENV` | Yes | Environment mode | `production` |
-| `PORT` | Yes | HTTP server port | `3000` |
-| `OWNER_NUMBER` | Yes* | Bot owner WhatsApp ID | `13105551234@c.us` |
+### 5. Configure GitHub Webhook
 
-*Required for admin commands to work
+1. Go to your GitHub repository
+2. Navigate to **Settings** → **Webhooks** → **Add webhook**
+3. Set the Payload URL to: `https://your-domain.com/github/webhook`
+4. Set Content type to: `application/json`
+5. Set the Secret to match your `GITHUB_WEBHOOK_SECRET`
+6. Select individual events:
+   - Issues
+   - Pull requests
+   - Issue comments
+7. Click **Add webhook**
 
-### Getting Your OWNER_NUMBER
+### 6. Start the Bot
 
-1. Deploy the bot first
-2. Scan QR code to authenticate
-3. Check logs for: `📱 Your number: xxxxx@c.us`
-4. Set that value as `OWNER_NUMBER` in Render
-5. Redeploy
+```bash
+npm start
+```
 
 ## 🐳 Docker Deployment
 
-### Build Locally
+### Build the Image
+
 ```bash
-docker build -t whatsapp-bot .
+docker build -t whatsapp-github-bot .
 ```
 
-### Run Locally
+### Run the Container
+
 ```bash
-docker run -p 3000:3000 \
-  -v $(pwd)/data:/app/data \
-  -e OWNER_NUMBER=your_number@c.us \
-  whatsapp-bot
+docker run -d \
+  --name whatsapp-bot \
+  -p 3000:3000 \
+  -e WHATSAPP_GROUP_ID="your-group-id" \
+  -e GITHUB_WEBHOOK_SECRET="your-secret" \
+  -e GITHUB_REPO="username/repo" \
+  -e DOCKER=true \
+  -v $(pwd)/.wwebjs_auth:/app/.wwebjs_auth \
+  whatsapp-github-bot
 ```
 
-### Deploy on Render
-Render automatically builds and deploys using `Dockerfile` and `render.yaml`.
+### Docker Compose
 
-## 📊 Monitoring
+```yaml
+version: '3.8'
 
-### Health Check Endpoint
-```
-GET https://your-app-name.onrender.com/health
-```
-
-Response:
-```json
-{
-  "status": "running",
-  "whatsappReady": true,
-  "uptime": 12345,
-  "timestamp": "2025-10-20T10:00:00.000Z",
-  "nodeVersion": "v20.x.x",
-  "memoryUsage": {...},
-  "environment": "render"
-}
+services:
+  whatsapp-bot:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - WHATSAPP_GROUP_ID=${WHATSAPP_GROUP_ID}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - DOCKER=true
+    volumes:
+      - ./.wwebjs_auth:/app/.wwebjs_auth
+    restart: unless-stopped
 ```
 
-### Logs
-Monitor in real-time via Render Dashboard:
-- Application logs
-- Error messages
-- Message activity
-- Issue operations
+## 📱 WhatsApp Commands
 
-## 🔒 Security
+### Issue Management
 
-- **No credentials in code** - All sensitive data in environment variables
-- **Owner verification** - Admin commands restricted to bot owner
-- **No database exposure** - File-based storage with proper permissions
-- **Secure session** - WhatsApp session stored in persistent disk
-- **HTTPS only** - All traffic encrypted on Render
+| Command | Description |
+|---------|-------------|
+| `$help` | Show all available commands |
+| `$issue add <title>` | Create a new issue |
+| `$issue list` | List all open issues |
+| `$issue closed` | List all closed issues |
+| `$issue my` | List your assigned issues |
+| `$issue assign <id> self` | Assign issue to yourself |
+| `$issue assign <id> @mention` | Assign to mentioned person |
+| `$issue unassign <id>` | Remove all assignments |
+| `$issue update <id> <new title>` | Update issue title |
+| `$issue deadline <id> <YYYY-MM-DD>` | Set deadline |
+| `$issue deadline <id> remove` | Remove deadline |
+| `$issue complete <id>` | Mark issue as complete |
+| `$issue reopen <id>` | Reopen a closed issue |
 
-## 🆘 Troubleshooting
+### Example Usage
 
-### Bot Not Responding
-1. Check health endpoint: `/health`
-2. Verify `whatsappReady: true`
-3. Check Render logs for errors
-4. Ensure service is not sleeping (free tier)
+```
+$issue add Fix login bug
+$issue assign 1 self
+$issue deadline 1 2025-11-01
+$issue complete 1
+```
 
-### Admin Commands Not Working
-1. Verify `OWNER_NUMBER` is set
-2. Check format: `[country_code][number]@c.us`
-3. No spaces, dashes, or parentheses
-4. Match exactly from logs
+## 🔧 API Endpoints
 
-### Session Lost After Restart
-1. Add persistent disk in Render
-2. Mount path: `/app/.wwebjs_auth`
-3. Size: 1 GB minimum
-4. Redeploy service
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Health check |
+| `/health` | GET | Detailed status information |
+| `/github/webhook` | POST | GitHub webhook endpoint |
 
-### Memory Issues
-1. Upgrade Render plan for more RAM
-2. Monitor memory usage in health endpoint
-3. Check for memory leaks in logs
+## 🏗️ Project Structure
 
-## 📈 Scaling
+```
+whatsapp-github-bot/
+├── index.js              # Main application file
+├── package.json          # Node.js dependencies
+├── .env                  # Environment variables (create this)
+├── .gitignore           # Git ignore rules
+├── .dockerignore        # Docker ignore rules
+├── Dockerfile           # Docker configuration
+├── README.md            # This file
+└── .wwebjs_auth/        # WhatsApp session data (auto-generated)
+```
 
-### Free Tier
-- Perfect for small teams (< 10 people)
-- Sleeps after 15 minutes inactivity
-- Use uptime monitoring to keep alive
+## 🔒 Security Notes
 
-### Starter Plan ($7/month)
-- No sleeping
-- Better performance
-- Recommended for active teams
+1. **Never commit** your `.env` file or `.wwebjs_auth` directory
+2. **Use strong secrets** for `GITHUB_WEBHOOK_SECRET`
+3. **Verify webhook signatures** are enabled (handled automatically)
+4. **Keep dependencies updated** with `npm audit fix`
+5. **Limit webhook access** by setting `GITHUB_REPO` filter
 
-### Pro Features
-- Multiple instances
-- Auto-scaling
-- High availability
-- Custom domains
+## ⚠️ Important Notes
+
+- **Data Persistence**: All issue data is stored in-memory and will be lost on restart
+- **WhatsApp Session**: The `.wwebjs_auth` directory maintains your WhatsApp session
+- **Rate Limits**: Be mindful of WhatsApp's rate limits when sending messages
+- **GitHub Sync**: GitHub issues automatically create local issues when opened
+
+## 🐛 Troubleshooting
+
+### QR Code Not Appearing
+- Ensure your terminal supports QR code rendering
+- Check if port 3000 is available
+- Verify Chromium is installed (for Docker deployments)
+
+### Webhook Not Working
+- Verify the webhook URL is publicly accessible
+- Check `GITHUB_WEBHOOK_SECRET` matches in both GitHub and `.env`
+- Review GitHub webhook delivery logs
+- Check server logs for signature verification errors
+
+### WhatsApp Disconnects
+- The bot will automatically attempt to reconnect
+- If issues persist, delete `.wwebjs_auth` and re-scan QR code
+- Check Chromium/Puppeteer compatibility
+
+### Docker Issues
+- Ensure Chromium is installed in the container
+- Verify volume mounts for `.wwebjs_auth`
+- Check container logs: `docker logs whatsapp-bot`
+
+## 📦 Dependencies
+
+- **whatsapp-web.js**: WhatsApp Web API
+- **express**: Web server framework
+- **qrcode-terminal**: QR code rendering
+- **dotenv**: Environment variable management
+- **crypto**: Webhook signature verification
+
+## 🚀 Deployment Options
+
+### Render.com
+1. Create a new Web Service
+2. Connect your GitHub repository
+3. Set environment variables in Render dashboard
+4. Deploy!
+
+### Railway.app
+1. Create new project from GitHub
+2. Add environment variables
+3. Deploy automatically on push
+
+### VPS/Cloud Server
+1. Clone repository
+2. Install Node.js and dependencies
+3. Use PM2 for process management: `pm2 start index.js --name whatsapp-bot`
+4. Set up reverse proxy (nginx) for HTTPS
+
+## 📄 License
+
+MIT License - feel free to use this project for personal or commercial purposes.
 
 ## 🤝 Contributing
 
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-## 📝 License
+## 💬 Support
 
-MIT License - see LICENSE file for details
-
-## 👨‍💻 Author
-
-**Adhyan Jain**
-
-## 🙏 Acknowledgments
-
-- [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) - WhatsApp Web API
-- [Puppeteer](https://pptr.dev/) - Headless Chrome automation
-- [Render](https://render.com/) - Deployment platform
-
-## 📚 Documentation
-
-- [Quick Start Guide](./QUICKSTART.md) - Get started in 10 minutes
-- [Deployment Guide](./DEPLOYMENT.md) - Detailed deployment instructions
-- [API Documentation](https://wwebjs.dev/) - WhatsApp Web.js docs
-
-## 🔗 Links
-
-- **Live Demo**: `https://your-app-name.onrender.com`
-- **Health Check**: `https://your-app-name.onrender.com/health`
-- **Source Code**: Your GitHub repo
-- **Issues**: GitHub Issues tab
-
-## 📞 Support
-
-Having issues? Check:
-1. [DEPLOYMENT.md](./DEPLOYMENT.md) - Troubleshooting section
-2. Application logs in Render Dashboard
-3. Health endpoint status
-4. GitHub Issues for bug reports
+For issues, questions, or suggestions, please open an issue on GitHub.
 
 ---
 
-**Made with ❤️ for better team coordination**
-
-*Deploy once, manage everywhere* 🚀
+Made with ❤️ for seamless GitHub + WhatsApp integration

@@ -1,45 +1,444 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
-const fs = require("fs");
-const path = require("path");
 const express = require("express");
+const crypto = require("crypto");
+const path = require("path");
+const fs = require("fs");
 
+require("dotenv").config();
+
+// Environment configuration
 const isRender = process.env.RENDER === "true";
 const PORT = process.env.PORT || 3000;
-const OWNER_NUMBER = process.env.OWNER_NUMBER;
+const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID;
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET;
+const GITHUB_REPO = process.env.GITHUB_REPO;
 
-// Validate OWNER_NUMBER format
-if (OWNER_NUMBER && !OWNER_NUMBER.includes("@c.us")) {
-  console.warn(
-    "OWNER_NUMBER should be in format: [country_code][number]@c.us"
-  );
-  console.warn("   Example: 13105551234@c.us");
+console.log("Environment check:");
+console.log(`- WHATSAPP_GROUP_ID: ${WHATSAPP_GROUP_ID ? "Set" : "Missing"}`);
+console.log(`- GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET ? "Set" : "Missing"}`);
+console.log(`- GITHUB_REPO filter: ${GITHUB_REPO || "Not configured"}`);
+console.log(`- Render deployment: ${isRender ? "Yes" : "No"}`);
+
+if (WHATSAPP_GROUP_ID && !WHATSAPP_GROUP_ID.endsWith("@g.us")) {
+  console.warn("WHATSAPP_GROUP_ID usually ends with '@g.us' for groups. Double check your value.");
+}
+
+// Ensure auth directory exists
+const authDir = path.join(__dirname, ".wwebjs_auth");
+if (!fs.existsSync(authDir)) {
+  fs.mkdirSync(authDir, { recursive: true });
+  console.log("Created .wwebjs_auth directory for session storage");
 }
 
 const app = express();
 
-app.get("/", (req, res) => {
-  res.send("WhatsApp Bot is running. Check /health for status.");
+// Capture raw body for GitHub signature verification
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
+app.get("/", (_req, res) => {
+  res.send("WhatsApp Bot with GitHub integration is online. POST GitHub events to /github/webhook.");
 });
 
-app.get("/health", (req, res) => {
-  const status = {
+app.get("/health", (_req, res) => {
+  res.json({
     status: "running",
-    whatsappReady: client.info ? true : false,
-    uptime: process.uptime(),
+    whatsappReady: clientReady,
+    queuedMessages: pendingMessages.length,
+    targetConfigured: !!WHATSAPP_GROUP_ID,
+    openIssues: issuesStore.open.length,
+    closedIssues: issuesStore.closed.length,
     timestamp: new Date().toISOString(),
-    nodeVersion: process.version,
-    memoryUsage: process.memoryUsage(),
-    environment: isRender ? "render" : "local",
-  };
-  res.json(status);
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`HTTP server listening on port ${PORT}`);
+// GitHub webhook signature verification
+function signaturesMatch(signatureHeader, rawBody) {
+  if (!GITHUB_WEBHOOK_SECRET) {
+    return true;
+  }
+
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) {
+    return false;
+  }
+
+  const bodyBuffer = rawBody || Buffer.alloc(0);
+
+  let received;
+  try {
+    received = Buffer.from(signatureHeader.replace("sha256=", ""), "hex");
+  } catch (err) {
+    console.warn("Invalid signature encoding:", err.message);
+    return false;
+  }
+
+  const expected = Buffer.from(
+    crypto.createHmac("sha256", GITHUB_WEBHOOK_SECRET).update(bodyBuffer).digest("hex"),
+    "hex"
+  );
+
+  if (received.length !== expected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(received, expected);
+}
+
+// GitHub webhook endpoint
+app.post("/github/webhook", async (req, res) => {
+  if (!signaturesMatch(req.get("X-Hub-Signature-256"), req.rawBody)) {
+    console.warn("Rejected webhook: signature mismatch");
+    return res.status(401).send("Signature mismatch");
+  }
+
+  const event = req.get("X-GitHub-Event");
+  const deliveryId = req.get("X-GitHub-Delivery");
+  const payload = req.body;
+
+  if (!event || !payload || !payload.repository) {
+    console.warn("Rejected webhook: missing event metadata");
+    return res.status(400).send("Missing event metadata");
+  }
+
+  if (GITHUB_REPO && payload.repository.full_name !== GITHUB_REPO) {
+    console.log(
+      `Ignoring event ${deliveryId} for ${payload.repository.full_name}; filtered by ${GITHUB_REPO}`
+    );
+    return res.status(202).json({ ignored: true });
+  }
+
+  console.log(`Received ${event} event (${deliveryId}) for ${payload.repository.full_name}`);
+
+  try {
+    switch (event) {
+      case "issues":
+        await handleGitHubIssueEvent(payload);
+        break;
+      case "pull_request":
+        await handlePullRequestEvent(payload);
+        break;
+      case "issue_comment":
+        await handleIssueCommentEvent(payload);
+        break;
+      default:
+        console.log(`Event ${event} not handled; ignoring.`);
+    }
+  } catch (err) {
+    console.error(`Failed processing ${event} event:`, err);
+    return res.status(500).json({ error: "Failed to process event" });
+  }
+
+  return res.status(202).json({ ok: true });
 });
 
-// Configure Puppeteer based on environment
+// Message queue system
+const pendingMessages = [];
+let clientReady = false;
+let flushTimer = null;
+const RETRY_DELAY_MS = 5000;
+
+async function sendMessageToGroup(message) {
+  if (!message) {
+    return;
+  }
+
+  try {
+    if (!WHATSAPP_GROUP_ID) {
+      throw new Error("WHATSAPP_GROUP_ID is not configured");
+    }
+
+    await client.sendMessage(WHATSAPP_GROUP_ID, message);
+    console.log("Delivered WhatsApp notification to target group");
+  } catch (err) {
+    console.error("Failed to deliver WhatsApp notification:", err.message);
+    throw err;
+  }
+}
+
+async function queueOrSend(message) {
+  if (!WHATSAPP_GROUP_ID) {
+    console.warn("Cannot queue message: WHATSAPP_GROUP_ID missing");
+    return;
+  }
+
+  try {
+    await sendMessageToGroup(message);
+  } catch (err) {
+    pendingMessages.push(message);
+    const reason = clientReady ? "send failure" : "client not ready";
+    console.log(`Queued message due to ${reason}; will retry when possible`);
+    scheduleFlush();
+  }
+}
+
+async function flushPendingMessages() {
+  if (!clientReady || pendingMessages.length === 0) {
+    if (pendingMessages.length === 0 && flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    return;
+  }
+
+  console.log(`Flushing ${pendingMessages.length} queued messages`);
+  const toDeliver = pendingMessages.splice(0, pendingMessages.length);
+
+  for (const message of toDeliver) {
+    try {
+      await sendMessageToGroup(message);
+    } catch (err) {
+      console.error("Failed delivering queued message, re-queuing", err.message);
+      pendingMessages.unshift(message);
+      scheduleFlush();
+      break;
+    }
+  }
+}
+
+function scheduleFlush() {
+  if (flushTimer || pendingMessages.length === 0) {
+    return;
+  }
+
+  flushTimer = setTimeout(async () => {
+    flushTimer = null;
+    try {
+      await flushPendingMessages();
+    } catch (err) {
+      console.error("Error while flushing queued messages:", err.message);
+      scheduleFlush();
+    }
+  }, RETRY_DELAY_MS);
+}
+
+// GitHub event formatters
+function formatGitHubIssueMessage(action, payload) {
+  const issue = payload.issue;
+  if (!issue) {
+    return null;
+  }
+
+  const repo = payload.repository?.full_name || "unknown repo";
+  const issueUrl = issue.html_url;
+  const title = issue.title;
+  const number = issue.number;
+  const actor = payload.sender?.login || "someone";
+
+  switch (action) {
+    case "opened":
+      return `*🆕 GitHub Issue Opened* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    case "assigned": {
+      const assignee = payload.assignee?.login || "unknown";
+      return `*👥 GitHub Issue Assigned* ${repo}#${number}\n• Title: ${title}\n• Assigned to: ${assignee}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "unassigned": {
+      const assignee = payload.assignee?.login || "someone";
+      return `*♻️ GitHub Issue Unassigned* ${repo}#${number}\n• Title: ${title}\n• Removed: ${assignee}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "closed": {
+      const resolution = issue.state_reason || "closed";
+      return `*✅ GitHub Issue ${resolution.charAt(0).toUpperCase() + resolution.slice(1)}* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "reopened": {
+      return `*♻️ GitHub Issue Reopened* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "edited": {
+      return `*✏️ GitHub Issue Edited* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function formatPullRequestMessage(action, payload) {
+  const pr = payload.pull_request;
+  if (!pr) {
+    return null;
+  }
+
+  const repo = payload.repository?.full_name || "unknown repo";
+  const prUrl = pr.html_url;
+  const title = pr.title;
+  const number = pr.number;
+  const actor = payload.sender?.login || "someone";
+  const branchInfo = pr.head?.ref && pr.base?.ref ? `${pr.head.ref} → ${pr.base.ref}` : null;
+
+  switch (action) {
+    case "opened": {
+      const lines = [
+        `*🚀 PR Opened* ${repo}#${number}`,
+        `• Title: ${title}`,
+        branchInfo ? `• Branches: ${branchInfo}` : null,
+        `• By: ${actor}`,
+        `🔗 ${prUrl}`,
+      ].filter(Boolean);
+      return lines.join("\n");
+    }
+    case "reopened": {
+      return `*♻️ PR Reopened* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    case "closed": {
+      if (pr.merged) {
+        const merger = pr.merged_by?.login || actor;
+        const lines = [
+          `*✅ PR Merged* ${repo}#${number}`,
+          `• Title: ${title}`,
+          branchInfo ? `• Branches: ${branchInfo}` : null,
+          `• By: ${merger}`,
+          `🔗 ${prUrl}`,
+        ].filter(Boolean);
+        return lines.join("\n");
+      }
+
+      return `*🛑 PR Closed* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    case "edited": {
+      return `*✏️ PR Edited* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    case "review_requested": {
+      const reviewer = payload.requested_reviewer?.login || "someone";
+      return `*👀 PR Review Requested* ${repo}#${number}\n• Title: ${title}\n• Reviewer: ${reviewer}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function formatIssueCommentMessage(action, payload) {
+  const issue = payload.issue;
+  const comment = payload.comment;
+  if (!issue || !comment) {
+    return null;
+  }
+
+  const repo = payload.repository?.full_name || "unknown repo";
+  const issueNumber = issue.number;
+  const issueTitle = issue.title;
+  const commentAuthor = comment.user?.login || "someone";
+  const actor = payload.sender?.login || commentAuthor;
+  const commentUrl = comment.html_url;
+
+  const baseLines = [
+    `*💬 Issue Comment* ${repo}#${issueNumber}`,
+    `• Title: ${issueTitle}`,
+    `• Comment by: ${commentAuthor}`,
+    `• Triggered by: ${actor}`,
+    `🔗 ${commentUrl}`,
+  ];
+
+  if (action === "created") {
+    const snippet = comment.body?.trim().split("\n").slice(0, 3).join("\n");
+    if (snippet) {
+      baseLines.splice(4, 0, `• Preview: ${snippet.length > 200 ? `${snippet.slice(0, 197)}...` : snippet}`);
+    }
+    return baseLines.join("\n");
+  }
+
+  if (action === "edited") {
+    baseLines.splice(4, 0, "• Comment was edited");
+    return baseLines.join("\n");
+  }
+
+  if (action === "deleted") {
+    return `*🗑️ Issue Comment Deleted* ${repo}#${issueNumber}\n• Deleted by: ${actor}\n🔗 ${commentUrl}`;
+  }
+
+  return null;
+}
+
+// GitHub event handlers
+async function handleGitHubIssueEvent(payload) {
+  const action = payload.action;
+  if (!action) {
+    return;
+  }
+
+  const message = formatGitHubIssueMessage(action, payload);
+
+  if (message) {
+    const issueNumber = payload.issue?.number;
+    console.log(
+      `Queueing WhatsApp notification for GitHub issue #${issueNumber ?? "unknown"} (${action})`
+    );
+    await queueOrSend(message);
+    scheduleFlush();
+    
+    // Auto-create local issue when GitHub issue is opened
+    if (action === "opened" && payload.issue) {
+      const title = `[GitHub #${payload.issue.number}] ${payload.issue.title}`;
+      await addIssue(title);
+      console.log(`Auto-created local issue from GitHub issue #${payload.issue.number}`);
+    }
+    
+    // Auto-close local issue when GitHub issue is closed
+    if (action === "closed" && payload.issue) {
+      const githubIssueNumber = payload.issue.number;
+      const localIssue = issuesStore.open.find(i => i.title.includes(`[GitHub #${githubIssueNumber}]`));
+      if (localIssue) {
+        await closeIssue(localIssue.id);
+        console.log(`Auto-closed local issue #${localIssue.id} from GitHub issue #${githubIssueNumber}`);
+      }
+    }
+    
+    // Auto-reopen local issue when GitHub issue is reopened
+    if (action === "reopened" && payload.issue) {
+      const githubIssueNumber = payload.issue.number;
+      const localIssue = issuesStore.closed.find(i => i.title.includes(`[GitHub #${githubIssueNumber}]`));
+      if (localIssue) {
+        await reopenIssue(localIssue.id);
+        console.log(`Auto-reopened local issue #${localIssue.id} from GitHub issue #${githubIssueNumber}`);
+      }
+    }
+  } else {
+    console.log(`No WhatsApp notification for GitHub issue action '${action}', ignoring.`);
+  }
+}
+
+async function handlePullRequestEvent(payload) {
+  const action = payload.action;
+  if (!action) {
+    return;
+  }
+
+  const message = formatPullRequestMessage(action, payload);
+
+  if (message) {
+    const prNumber = payload.pull_request?.number;
+    console.log(`Queueing WhatsApp notification for PR #${prNumber ?? "unknown"} (${action})`);
+    await queueOrSend(message);
+    scheduleFlush();
+  } else {
+    console.log(`No WhatsApp notification for PR action '${action}', ignoring.`);
+  }
+}
+
+async function handleIssueCommentEvent(payload) {
+  const action = payload.action;
+  if (!action) {
+    return;
+  }
+
+  const message = formatIssueCommentMessage(action, payload);
+
+  if (message) {
+    const issueNumber = payload.issue?.number;
+    console.log(
+      `Queueing WhatsApp notification for issue comment on #${issueNumber ?? "unknown"} (${action})`
+    );
+    await queueOrSend(message);
+    scheduleFlush();
+  } else {
+    console.log(`No WhatsApp notification for issue_comment action '${action}', ignoring.`);
+  }
+}
+
+// Puppeteer configuration
 const puppeteerConfig = {
   headless: true,
   args: [
@@ -55,17 +454,15 @@ const puppeteerConfig = {
     "--disable-blink-features=AutomationControlled",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding"
+    "--disable-renderer-backgrounding",
+    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   ],
 };
 
-// Use system Chromium on Render/Docker
 if (isRender || process.env.DOCKER) {
   puppeteerConfig.executablePath = "/usr/bin/chromium";
   console.log("Using system Chromium");
 }
-
-console.log("Initializing WhatsApp client...");
 
 const client = new Client({
   authStrategy: new LocalAuth({
@@ -76,56 +473,13 @@ const client = new Client({
     type: "remote",
     remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
   },
+  qrMaxRetries: 5,
+  restartOnAuthFail: true,
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 0,
 });
 
-// Initialize with retry logic
-let initAttempts = 0;
-const maxAttempts = 3;
-
-async function initializeClient() {
-  try {
-    initAttempts++;
-    console.log(`Initialization attempt ${initAttempts}/${maxAttempts}`);
-    await client.initialize();
-  } catch (err) {
-    console.error("Failed to initialize client:", err.message);
-    
-    if (initAttempts < maxAttempts) {
-      console.log(`Retrying in 5 seconds...`);
-      setTimeout(() => initializeClient(), 5000);
-    } else {
-      console.error("Max initialization attempts reached. Exiting...");
-      process.exit(1);
-    }
-  }
-}
-
-initializeClient();
-
-const contactCache = new Map();
-const CACHE_DURATION = 5 * 60 * 1000;
-
-async function getCachedContact(id) {
-  const now = Date.now();
-  const cached = contactCache.get(id);
-
-  if (cached && now - cached.timestamp < CACHE_DURATION) {
-    return cached.contact;
-  }
-
-  try {
-    const contact = await client.getContactById(id);
-    if (contact) {
-      contactCache.set(id, { contact, timestamp: now });
-      return contact;
-    }
-  } catch (e) {
-    console.error(`Failed to get contact ${id}:`, e.message || e);
-  }
-  return null;
-}
-
-// Enhanced event handlers
+// WhatsApp client event handlers
 client.on("qr", (qr) => {
   console.log("\nScan this QR code to log in:");
   console.log("=".repeat(50));
@@ -140,33 +494,140 @@ client.on("authenticated", () => {
 
 client.on("auth_failure", (msg) => {
   console.error("Authentication failure:", msg);
-  console.log("You may need to rescan the QR code");
 });
 
-client.on("ready", () => {
+client.on("ready", async () => {
   console.log("=".repeat(50));
   console.log("WhatsApp client is ready!");
   console.log(`Your number: ${client.info.wid._serialized}`);
   console.log(`Your name: ${client.info.pushname}`);
-  if (OWNER_NUMBER) {
-    console.log(`Owner number configured: ${OWNER_NUMBER}`);
-  } else {
-    console.warn("OWNER_NUMBER not set - admin commands will not work");
-    console.warn("Set OWNER_NUMBER to: " + client.info.wid._serialized);
-  }
+  console.log(`Storage: In-Memory (non-persistent)`);
   console.log("=".repeat(50));
+  clientReady = true;
+
+  await flushPendingMessages();
 });
 
 client.on("disconnected", (reason) => {
-  console.log("Client disconnected:", reason);
-  console.log("Attempting to reconnect...");
+  console.warn("WhatsApp client disconnected:", reason);
+  clientReady = false;
 });
 
 client.on("loading_screen", (percent, message) => {
   console.log(`Loading: ${percent}% - ${message}`);
 });
 
+async function getDisplayName(id) {
+  try {
+    const contact = await client.getContactById(id);
+    if (contact) {
+      return contact.pushname || contact.number || id;
+    }
+  } catch (e) {
+    console.error(`Error getting display name for ${id}:`, e);
+  }
+  return id;
+}
 
+function formatTimestamp(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+// In-memory data storage
+let issuesStore = { open: [], closed: [], nextId: 1 };
+
+// Issue management functions
+async function addIssue(title) {
+  console.log(`Creating issue: "${title}"`);
+  const newIssue = {
+    id: String(issuesStore.nextId++),
+    title,
+    assignedNames: [],
+    createdAt: formatTimestamp(new Date()),
+    deadline: "",
+  };
+  issuesStore.open.push(newIssue);
+  console.log(`Issue created with ID: ${newIssue.id}`);
+  console.log(`Current open issues count: ${issuesStore.open.length}`);
+  return newIssue;
+}
+
+async function listIssues() {
+  return issuesStore.open;
+}
+
+async function listClosedIssues() {
+  return issuesStore.closed;
+}
+
+async function getIssuesAssignedTo(userName) {
+  return issuesStore.open.filter(
+    (i) => i.assignedNames && i.assignedNames.includes(userName)
+  );
+}
+
+async function assignIssue(id, userNames) {
+  const issue = issuesStore.open.find((i) => i.id === id);
+  if (!issue) return false;
+  
+  userNames.forEach((userName) => {
+    if (!issue.assignedNames.includes(userName)) {
+      issue.assignedNames.push(userName);
+    }
+  });
+  
+  return true;
+}
+
+async function unassignIssue(id) {
+  const issue = issuesStore.open.find((i) => i.id === id);
+  if (!issue) return false;
+  issue.assignedNames = [];
+  return true;
+}
+
+async function updateIssue(id, newTitle) {
+  const issue = issuesStore.open.find((i) => i.id === id);
+  if (!issue) return false;
+  issue.title = newTitle;
+  return true;
+}
+
+async function setDeadline(id, deadline) {
+  const issue = issuesStore.open.find((i) => i.id === id);
+  if (!issue) return false;
+  issue.deadline = deadline;
+  return true;
+}
+
+async function closeIssue(id) {
+  const idx = issuesStore.open.findIndex((i) => i.id === id);
+  if (idx === -1) return false;
+  
+  const issue = issuesStore.open.splice(idx, 1)[0];
+  issuesStore.closed.push(issue);
+  
+  return true;
+}
+
+async function reopenIssue(id) {
+  const idx = issuesStore.closed.findIndex((i) => i.id === id);
+  if (idx === -1) return false;
+  
+  const issue = issuesStore.closed.splice(idx, 1)[0];
+  issuesStore.open.push(issue);
+  
+  return true;
+}
+
+// Message handler
 client.on("message_create", async (msg) => {
   if (msg.from === "status@broadcast") return;
 
@@ -175,37 +636,32 @@ client.on("message_create", async (msg) => {
       msg.body.length > 50 ? "..." : ""
     }`
   );
+  
   if (msg.body === "$help") {
-    const helpText = `*Issue Tracker Commands*
+    const helpText = `*Bot Commands*
 
-*Creating Issues:*
-$issue add title here - Create a new issue
-
-*Viewing Issues:*
+📋 *Issue Tracker:*
+$issue add <title> - Create a new issue
 $issue list - List all open issues
 $issue closed - List all closed issues
 $issue my - List your assigned issues
-
-*Managing Issues:*
 $issue assign <id> self - Assign issue to yourself
-$issue assign <id> @mention1 @mention2 - Assign to multiple people
-$issue unassign <id> - Remove all assignments from issue
-$issue unassign <id> @mention - Remove specific person from issue
+$issue assign <id> @mention - Assign to mentioned person
+$issue unassign <id> - Remove all assignments
+$issue update <id> <new title> - Update issue title
+$issue deadline <id> <YYYY-MM-DD> - Set deadline
+$issue deadline <id> remove - Remove deadline
 $issue complete <id> - Mark issue as complete
-$issue close <id> - Mark issue as complete (alias)
-$issue delete <id> - Delete an issue
+$issue reopen <id> - Reopen a closed issue
 
-*Admin Only:*
-$everyone - Mention all group members
-$everyone jc - Mention all non-admin members
-$everyone sc - Mention all admin members
+🔔 *GitHub Integration:*
+GitHub events are automatically posted when configured:
+- Issue opened/closed/assigned/reopened
+- Pull request opened/merged/closed
+- Issue comments created/edited/deleted
+- GitHub issues auto-sync with local tracker
 
-*Examples:*
-$issue add Fix login bug
-$issue assign 3 self
-$issue assign 5 @Adhyan @Krishang
-$issue unassign 5 @Adhyan
-$issue complete 2`;
+⚠️ *Note:* All data is stored in memory and will be lost on restart`;
 
     try {
       const chat = await msg.getChat();
@@ -216,96 +672,7 @@ $issue complete 2`;
     return;
   }
 
-  if (msg.body && msg.body.startsWith("$everyone")) {
-    try {
-      const chat = await msg.getChat();
-
-      if (!chat.isGroup) {
-        await msg.reply("This command only works in groups.");
-        return;
-      }
-
-      const parts = msg.body.trim().split(/\s+/);
-      let mode = "all";
-      if (parts.length >= 2) {
-        if (parts[1].toLowerCase() === "jc") mode = "nonadmin";
-        else if (parts[1].toLowerCase() === "sc") mode = "admin";
-        else {
-          await chat.sendMessage(
-            "Usage: $everyone [jc|sc] - jc = non-admins, sc = admins"
-          );
-          return;
-        }
-      }
-
-      let senderId = msg.author || msg.from;
-
-      if (!OWNER_NUMBER) {
-        await msg.reply(
-          "OWNER_NUMBER not configured. Admin commands disabled."
-        );
-        return;
-      }
-
-      if (senderId !== OWNER_NUMBER && !msg.fromMe) {
-        await msg.reply("Only the bot owner can use this command.");
-        return;
-      }
-
-      const toMention = [];
-      for (const p of chat.participants) {
-        const isAdmin = !!(p.isAdmin || p.isSuperAdmin);
-        if (
-          mode === "all" ||
-          (mode === "admin" && isAdmin) ||
-          (mode === "nonadmin" && !isAdmin)
-        ) {
-          const id = p.id && p.id._serialized ? p.id._serialized : p.id;
-          if (id) toMention.push(id);
-        }
-      }
-
-      if (toMention.length === 0) {
-        await chat.sendMessage("No members matched that filter.");
-        return;
-      }
-
-      const mentionContacts = await Promise.all(
-        toMention.map((id) => getCachedContact(id))
-      );
-
-      const validContacts = mentionContacts.filter((c) => c !== null);
-
-      if (validContacts.length === 0) {
-        await chat.sendMessage("Could not resolve any contacts.");
-        return;
-      }
-
-      let mentionText = "";
-      validContacts.forEach((contact) => {
-        mentionText += `@${
-          contact.number || (contact.id && contact.id.user) || contact.id
-        } `;
-      });
-
-      await chat.sendMessage(mentionText, { mentions: validContacts });
-      console.log(
-        `Successfully mentioned ${mode} members (${validContacts.length})`
-      );
-    } catch (err) {
-      console.error("Error in $everyone command:", err);
-      try {
-        const chat = await msg.getChat();
-        await chat.sendMessage(
-          "An error occurred while processing the command"
-        );
-      } catch (e) {
-        console.error("Failed to send error message:", e);
-      }
-    }
-    return;
-  }
-
+  // $issue commands
   if (msg.body && msg.body.startsWith("$issue")) {
     try {
       const chat = await msg.getChat();
@@ -315,264 +682,177 @@ $issue complete 2`;
       if (sub === "add") {
         const title = msg.body.substring("$issue add".length).trim();
         if (!title) {
-          await chat.sendMessage("Usage: $issue add title here");
+          await chat.sendMessage("Usage: $issue add <title>");
           return;
         }
 
-        const creator = msg.author || msg.from;
-        const contact = await msg.getContact();
-
-        const newIssue = addLocalIssue(title, creator);
-        await chat.sendMessage(
-          `Created issue #${newIssue.id}: ${newIssue.title}\nCreated by: @${contact.number}`,
-          {
-            mentions: [contact],
-          }
-        );
-      } else if (sub === "delete") {
-        const id = parts[2];
-        if (!id) {
-          await chat.sendMessage("Usage: $issue delete <id>");
-          return;
-        }
-        const ok = deleteLocalIssue(id);
-        if (ok) await chat.sendMessage(`Deleted issue #${id}`);
-        else await chat.sendMessage(`Issue #${id} not found`);
+        const newIssue = await addIssue(title);
+        await chat.sendMessage(`✅ Created issue #${newIssue.id}: ${newIssue.title}`);
       } else if (sub === "list") {
-        const list = listLocalIssues();
+        const list = await listIssues();
         if (list.length === 0) {
-          await chat.sendMessage("No open issues");
+          await chat.sendMessage("📋 No open issues");
         } else {
-          let lines = `*Open Issues (${list.length}):*\n\n`;
-          const mentions = [];
-          const mentionIds = new Set();
-
-          const allContactIds = new Set();
-          for (const i of list) {
-            if (i.assignedIds && i.assignedIds.length > 0) {
-              i.assignedIds.forEach((id) => allContactIds.add(id));
-            }
-            if (i.creator) allContactIds.add(i.creator);
-          }
-
-          const contactMap = new Map();
-          const contactPromises = Array.from(allContactIds).map(async (id) => {
-            const contact = await getCachedContact(id);
-            if (contact) contactMap.set(id, contact);
-          });
-          await Promise.all(contactPromises);
+          let lines = `*📋 Open Issues (${list.length}):*\n\n`;
 
           for (const i of list) {
-            let assigned = "\nUnassigned";
-            let creator = "";
+            let assigned = "\n❌ Unassigned";
+            let deadline = "";
 
-            if (i.assignedIds && i.assignedIds.length > 0) {
-              const assignedNames = [];
-              for (const assignedId of i.assignedIds) {
-                const contact = contactMap.get(assignedId);
-                if (contact) {
-                  assignedNames.push(`@${contact.number}`);
-                  if (!mentionIds.has(assignedId)) {
-                    mentions.push(contact);
-                    mentionIds.add(assignedId);
-                  }
-                } else {
-                  assignedNames.push(assignedId);
-                }
-              }
-              assigned = `\nAssigned to: ${assignedNames.join(", ")}`;
+            if (i.assignedNames && i.assignedNames.length > 0) {
+              assigned = `\n👤 Assigned to: ${i.assignedNames.join(", ")}`;
             }
 
-            if (i.creator) {
-              const contact = contactMap.get(i.creator);
-              if (contact) {
-                creator = `\nCreated by: @${contact.number}`;
-                if (!mentionIds.has(i.creator)) {
-                  mentions.push(contact);
-                  mentionIds.add(i.creator);
-                }
-              } else {
-                creator = `\nCreated by: ${i.creator}`;
-              }
+            if (i.deadline) {
+              deadline = `\n⏰ Deadline: ${i.deadline}`;
             }
 
-            lines += `#${i.id}: ${i.title}${assigned}${creator}\n\n`;
+            lines += `#${i.id}: ${i.title}${assigned}${deadline}\n\n`;
           }
 
-          await chat.sendMessage(lines, { mentions });
+          await chat.sendMessage(lines);
         }
       } else if (sub === "closed") {
-        const list = listClosedIssues();
+        const list = await listClosedIssues();
         if (list.length === 0) {
-          await chat.sendMessage("No closed issues");
+          await chat.sendMessage("📋 No closed issues");
         } else {
-          let lines = `*Closed Issues (${list.length}):*\n\n`;
-          const mentions = [];
-          const mentionIds = new Set();
-
-          const allContactIds = new Set();
-          for (const i of list) {
-            if (i.closedBy) allContactIds.add(i.closedBy);
-            if (i.assignedIds && i.assignedIds.length > 0) {
-              i.assignedIds.forEach((id) => allContactIds.add(id));
-            }
-          }
-
-          const contactMap = new Map();
-          const contactPromises = Array.from(allContactIds).map(async (id) => {
-            const contact = await getCachedContact(id);
-            if (contact) contactMap.set(id, contact);
-          });
-          await Promise.all(contactPromises);
+          let lines = `*✅ Closed Issues (${list.length}):*\n\n`;
 
           for (const i of list) {
-            let completedBy = "";
             let assigned = "";
 
-            if (i.closedBy) {
-              const contact = contactMap.get(i.closedBy);
-              if (contact) {
-                completedBy = `\nCompleted by: @${contact.number}`;
-                if (!mentionIds.has(i.closedBy)) {
-                  mentions.push(contact);
-                  mentionIds.add(i.closedBy);
-                }
-              } else {
-                completedBy = `\nCompleted by: ${i.closedBy}`;
-              }
+            if (i.assignedNames && i.assignedNames.length > 0) {
+              assigned = `\n👤 Was assigned to: ${i.assignedNames.join(", ")}`;
             }
 
-            if (i.assignedIds && i.assignedIds.length > 0) {
-              const assignedNames = [];
-              for (const assignedId of i.assignedIds) {
-                const contact = contactMap.get(assignedId);
-                if (contact) {
-                  assignedNames.push(`@${contact.number}`);
-                  if (!mentionIds.has(assignedId)) {
-                    mentions.push(contact);
-                    mentionIds.add(assignedId);
-                  }
-                } else {
-                  assignedNames.push(assignedId);
-                }
-              }
-              assigned = `\nWas assigned to: ${assignedNames.join(", ")}`;
-            }
-
-            lines += `#${i.id}: ${i.title}${completedBy}${assigned}\n\n`;
+            lines += `#${i.id}: ${i.title}${assigned}\n\n`;
           }
 
-          await chat.sendMessage(lines, { mentions });
+          await chat.sendMessage(lines);
         }
       } else if (sub === "my") {
         const senderId = msg.author || msg.from;
-        const items = getIssuesAssignedTo(senderId);
+        const senderName = await getDisplayName(senderId);
+        const items = await getIssuesAssignedTo(senderName);
         if (items.length === 0) {
-          await chat.sendMessage("You have no assigned issues");
+          await chat.sendMessage("📋 You have no assigned issues");
         } else {
-          let lines = `*Your Assigned Issues (${items.length}):*\n\n`;
+          let lines = `*📋 Your Assigned Issues (${items.length}):*\n\n`;
           items.forEach((i) => {
-            lines += `#${i.id}: ${i.title}\n`;
+            const deadlineText = i.deadline ? `\n⏰ Deadline: ${i.deadline}` : "";
+            lines += `#${i.id}: ${i.title}${deadlineText}\n\n`;
           });
           await chat.sendMessage(lines);
         }
       } else if (sub === "assign") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage(
-            "Usage: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
-          );
+          await chat.sendMessage("Usage: $issue assign <id> self OR $issue assign <id> @mention");
           return;
         }
 
         const senderId = msg.author || msg.from;
+        const senderName = await getDisplayName(senderId);
 
-        if (parts[3] === "self") {
-          const ok = assignLocalIssue(id, [senderId]);
+        if (parts[3] && parts[3].toLowerCase() === "self") {
+          const ok = await assignIssue(id, [senderName]);
           if (ok) {
-            await chat.sendMessage(`Assigned issue #${id} to you`);
+            await chat.sendMessage(`👤 Assigned issue #${id} to ${senderName}`);
           } else {
-            await chat.sendMessage(`Issue #${id} not found`);
+            await chat.sendMessage(`❌ Issue #${id} not found`);
           }
         } else if (msg.mentionedIds && msg.mentionedIds.length > 0) {
-          const ok = assignLocalIssue(id, msg.mentionedIds);
+          const names = [];
+          for (const mentionedId of msg.mentionedIds) {
+            const name = await getDisplayName(mentionedId);
+            names.push(name);
+          }
+
+          const ok = await assignIssue(id, names);
           if (ok) {
-            const contacts = await Promise.all(
-              msg.mentionedIds.map((id) => getCachedContact(id))
-            );
-
-            const validContacts = contacts.filter((c) => c !== null);
-            const names = validContacts.map((c) => `@${c.number}`);
-
-            await chat.sendMessage(
-              `Assigned issue #${id} to ${names.join(", ")}`,
-              {
-                mentions: validContacts,
-              }
-            );
+            await chat.sendMessage(`👤 Assigned issue #${id} to ${names.join(", ")}`);
           } else {
-            await chat.sendMessage(`Issue #${id} not found`);
+            await chat.sendMessage(`❌ Issue #${id} not found`);
           }
         } else {
-          await chat.sendMessage(
-            "Please use: $issue assign <id> self OR $issue assign <id> @mention1 @mention2"
-          );
+          await chat.sendMessage("Please use: $issue assign <id> self OR $issue assign <id> @mention");
         }
       } else if (sub === "unassign") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage(
-            "Usage: $issue unassign <id> OR $issue unassign <id> @mention"
-          );
+          await chat.sendMessage("Usage: $issue unassign <id>");
           return;
         }
 
-        if (msg.mentionedIds && msg.mentionedIds.length > 0) {
-          const ok = unassignSpecificPeople(id, msg.mentionedIds);
-          if (ok) {
-            const contacts = await Promise.all(
-              msg.mentionedIds.map((id) => getCachedContact(id))
-            );
-
-            const validContacts = contacts.filter((c) => c !== null);
-            const names = validContacts.map((c) => `@${c.number}`);
-
-            await chat.sendMessage(
-              `Removed ${names.join(", ")} from issue #${id}`,
-              {
-                mentions: validContacts,
-              }
-            );
-          } else {
-            await chat.sendMessage(
-              `Issue #${id} not found or person(s) not assigned`
-            );
-          }
-        } else {
-          const ok = unassignLocalIssue(id);
-          if (ok)
-            await chat.sendMessage(
-              `Unassigned all people from issue #${id}`
-            );
-          else await chat.sendMessage(`Issue #${id} not found`);
-        }
-      } else if (sub === "complete" || sub === "close") {
+        const ok = await unassignIssue(id);
+        if (ok) await chat.sendMessage(`♻️ Unassigned all people from issue #${id}`);
+        else await chat.sendMessage(`❌ Issue #${id} not found`);
+      } else if (sub === "update") {
         const id = parts[2];
         if (!id) {
-          await chat.sendMessage(
-            "Usage: $issue complete <id> OR $issue close <id>"
-          );
+          await chat.sendMessage("Usage: $issue update <id> <new title>");
           return;
         }
-        const closerId = msg.author || msg.from;
+        const newTitle = msg.body.substring(`$issue update ${id}`.length).trim();
+        if (!newTitle) {
+          await chat.sendMessage("Usage: $issue update <id> <new title>");
+          return;
+        }
+        const ok = await updateIssue(id, newTitle);
+        if (ok) await chat.sendMessage(`✏️ Updated issue #${id} to: ${newTitle}`);
+        else await chat.sendMessage(`❌ Issue #${id} not found`);
+      } else if (sub === "deadline") {
+        const id = parts[2];
+        const deadline = parts[3];
+        if (!id) {
+          await chat.sendMessage("Usage: $issue deadline <id> <YYYY-MM-DD> OR $issue deadline <id> remove");
+          return;
+        }
+        
+        if (deadline && deadline.toLowerCase() === "remove") {
+          const ok = await setDeadline(id, "");
+          if (ok) await chat.sendMessage(`🗑️ Removed deadline from issue #${id}`);
+          else await chat.sendMessage(`❌ Issue #${id} not found`);
+          return;
+        }
+        
+        if (!deadline) {
+          await chat.sendMessage("Usage: $issue deadline <id> <YYYY-MM-DD> OR $issue deadline <id> remove");
+          return;
+        }
+        
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(deadline)) {
+          await chat.sendMessage("Invalid date format. Use YYYY-MM-DD (e.g., 2025-10-22)");
+          return;
+        }
+        
+        const ok = await setDeadline(id, deadline);
+        if (ok) await chat.sendMessage(`⏰ Set deadline for issue #${id} to ${deadline}`);
+        else await chat.sendMessage(`❌ Issue #${id} not found`);
+      } else if (sub === "complete") {
+        const id = parts[2];
+        if (!id) {
+          await chat.sendMessage("Usage: $issue complete <id>");
+          return;
+        }
 
-        const ok = closeLocalIssue(id, closerId);
-        if (ok) await chat.sendMessage(`Completed issue #${id}`);
-        else await chat.sendMessage(`Issue #${id} not found`);
+        const ok = await closeIssue(id);
+        if (ok) await chat.sendMessage(`✅ Completed issue #${id}`);
+        else await chat.sendMessage(`❌ Issue #${id} not found`);
+      } else if (sub === "reopen") {
+        const id = parts[2];
+        if (!id) {
+          await chat.sendMessage("Usage: $issue reopen <id>");
+          return;
+        }
+
+        const ok = await reopenIssue(id);
+        if (ok) await chat.sendMessage(`♻️ Reopened issue #${id}`);
+        else await chat.sendMessage(`❌ Issue #${id} not found in closed issues`);
       } else {
-        await chat.sendMessage(
-          "Unknown command. Use $help to see all commands."
-        );
+        await chat.sendMessage("Unknown command. Use $help to see all commands.");
       }
     } catch (err) {
       console.error("Issue command error:", err);
@@ -586,199 +866,46 @@ $issue complete 2`;
   }
 });
 
-// Issue management functions
-const issuesFile = path.join(__dirname, "data", "issues.json");
-const dataDir = path.join(__dirname, "data");
-
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  console.log("Created data directory");
-}
-
-let issuesStore = { open: [], closed: [], nextId: 1 };
-
-try {
-  if (fs.existsSync(issuesFile)) {
-    const raw = fs.readFileSync(issuesFile, "utf8");
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      issuesStore.open = parsed.map(migrateIssue);
-      issuesStore.closed = [];
-      issuesStore.nextId = computeNextId();
-    } else {
-      issuesStore.open = (parsed.open || []).map(migrateIssue);
-      issuesStore.closed = (parsed.closed || []).map(migrateIssue);
-      issuesStore.nextId = parsed.nextId || computeNextId();
-    }
-    console.log(
-      `Loaded ${issuesStore.open.length} open issues and ${issuesStore.closed.length} closed issues`
-    );
-  } else {
-    console.log("No existing issues found, starting fresh");
-  }
-} catch (e) {
-  console.error("Error loading issues:", e);
-  issuesStore = { open: [], closed: [], nextId: 1 };
-}
-
-function migrateIssue(issue) {
-  if (issue.assignedId && !issue.assignedIds) {
-    issue.assignedIds = [issue.assignedId];
-    delete issue.assignedId;
-  } else if (!issue.assignedIds) {
-    issue.assignedIds = [];
-  }
-  return issue;
-}
-
-function saveLocalIssues() {
+// Initialize the application
+async function initializeApp() {
   try {
-    fs.writeFileSync(issuesFile, JSON.stringify(issuesStore, null, 2));
-    console.log("Issues saved successfully");
-  } catch (e) {
-    console.error("Error saving issues:", e);
+    console.log("Initializing application...");
+    console.log("In-memory storage initialized");
+    
+    await client.initialize();
+  } catch (err) {
+    console.error("Failed to initialize application:", err.message);
+    process.exit(1);
   }
 }
 
-function computeNextId() {
-  let max = 0;
-  const scan = (arr) => {
-    if (!Array.isArray(arr)) return;
-    arr.forEach((i) => {
-      const n = parseInt(i.id, 10);
-      if (!isNaN(n) && n > max) max = n;
-    });
-  };
-  scan(issuesStore.open);
-  scan(issuesStore.closed);
-  return max + 1;
-}
+initializeApp();
 
-function generateId() {
-  const id = issuesStore.nextId || computeNextId();
-  issuesStore.nextId = Number(id) + 1;
-  return String(id);
-}
+app.listen(PORT, () => {
+  console.log(`HTTP server listening on port ${PORT}`);
+});
 
-function addLocalIssue(title, creator) {
-  const issue = {
-    id: generateId(),
-    title,
-    assignedIds: [],
-    createdAt: new Date().toISOString(),
-    creator: creator || null,
-  };
-  issuesStore.open.push(issue);
-  saveLocalIssues();
-  console.log(`Created issue #${issue.id}: ${title}`);
-  return issue;
-}
+// Process handlers
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
 
-function deleteLocalIssue(id) {
-  let idx = issuesStore.open.findIndex((i) => i.id === id);
-  if (idx !== -1) {
-    issuesStore.open.splice(idx, 1);
-    saveLocalIssues();
-    console.log(`Deleted open issue #${id}`);
-    return true;
-  }
-  idx = issuesStore.closed.findIndex((i) => i.id === id);
-  if (idx !== -1) {
-    issuesStore.closed.splice(idx, 1);
-    saveLocalIssues();
-    console.log(`Deleted closed issue #${id}`);
-    return true;
-  }
-  return false;
-}
-
-function listLocalIssues() {
-  return issuesStore.open;
-}
-
-function listClosedIssues() {
-  return issuesStore.closed;
-}
-
-function assignLocalIssue(id, assignedIds) {
-  const issue = issuesStore.open.find((i) => i.id === id);
-  if (!issue) return false;
-
-  const existingIds = new Set(issue.assignedIds || []);
-  assignedIds.forEach((id) => existingIds.add(id));
-  issue.assignedIds = Array.from(existingIds);
-
-  saveLocalIssues();
-  console.log(`Assigned issue #${id} to ${assignedIds.length} user(s)`);
-  return true;
-}
-
-function unassignLocalIssue(id) {
-  const issue = issuesStore.open.find((i) => i.id === id);
-  if (!issue) return false;
-  issue.assignedIds = [];
-  saveLocalIssues();
-  console.log(`Unassigned all users from issue #${id}`);
-  return true;
-}
-
-function unassignSpecificPeople(id, peopleIds) {
-  const issue = issuesStore.open.find((i) => i.id === id);
-  if (!issue) return false;
-
-  const before = issue.assignedIds.length;
-  issue.assignedIds = (issue.assignedIds || []).filter(
-    (assignedId) => !peopleIds.includes(assignedId)
-  );
-  const after = issue.assignedIds.length;
-
-  if (before === after) return false;
-
-  saveLocalIssues();
-  console.log(`Removed ${before - after} user(s) from issue #${id}`);
-  return true;
-}
-
-function getIssuesAssignedTo(whatsappId) {
-  return issuesStore.open.filter(
-    (i) => i.assignedIds && i.assignedIds.includes(whatsappId)
-  );
-}
-
-function closeLocalIssue(id, closerId) {
-  const idx = issuesStore.open.findIndex((i) => i.id === id);
-  if (idx === -1) return false;
-  const issue = issuesStore.open.splice(idx, 1)[0];
-  issue.closedAt = new Date().toISOString();
-  issue.closedBy = closerId || null;
-  issuesStore.closed.push(issue);
-  saveLocalIssues();
-  console.log(`Closed issue #${id}`);
-  return true;
-}
-
-// Graceful shutdown
-process.on("SIGTERM", async () => {
-  console.log("SIGTERM received, shutting down gracefully...");
-  saveLocalIssues();
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, destroying client...');
   try {
     await client.destroy();
   } catch (e) {
-    console.error("Error destroying client:", e);
+    console.error('Error destroying client:', e);
   }
   process.exit(0);
 });
 
-process.on("SIGINT", async () => {
-  console.log("\nSIGINT received, shutting down gracefully...");
-  saveLocalIssues();
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, destroying client...');
   try {
     await client.destroy();
   } catch (e) {
-    console.error("Error destroying client:", e);
+    console.error('Error destroying client:', e);
   }
   process.exit(0);
 });
-
-console.log("WhatsApp Issue Tracker Bot Started");
-console.log("=".repeat(50));
