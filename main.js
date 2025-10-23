@@ -587,7 +587,18 @@ $everyone jc - Mention all non-admins only (admin only)`;
 client.on("disconnected", (reason) => {
   console.log("Client disconnected:", reason);
   if (reason === "LOGOUT") {
-    console.log("Logged out - manual intervention required");
+    console.log("Session logged out - clearing auth data and restarting...");
+    const authPath = path.join(__dirname, ".wwebjs_auth");
+    if (fs.existsSync(authPath)) {
+      fs.rmSync(authPath, { recursive: true, force: true });
+      console.log("Cleared authentication data");
+    }
+    console.log("Please scan QR code again");
+    setTimeout(() => {
+      client.initialize().catch(err => {
+        console.error("Reconnection failed:", err.message);
+      });
+    }, 5000);
     return;
   }
   console.log("Attempting to reconnect in 10 seconds...");
