@@ -131,20 +131,6 @@ app.post("/github/webhook", async (req, res) => {
 
 const pendingMessages = [];
 let clientReady = false;
-let cachedChat = null;
-
-async function ensureTargetChat() {
-  if (!WHATSAPP_GROUP_ID) {
-    throw new Error("WHATSAPP_GROUP_ID is not configured");
-  }
-
-  if (cachedChat) {
-    return cachedChat;
-  }
-
-  cachedChat = await client.getChatById(WHATSAPP_GROUP_ID);
-  return cachedChat;
-}
 
 async function sendMessageToGroup(message) {
   if (!message) {
@@ -152,12 +138,14 @@ async function sendMessageToGroup(message) {
   }
 
   try {
-    const chat = await ensureTargetChat();
-    await chat.sendMessage(message);
-    console.log("Delivered WhatsApp notification");
+    if (!WHATSAPP_GROUP_ID) {
+      throw new Error("WHATSAPP_GROUP_ID is not configured");
+    }
+
+    await client.sendMessage(WHATSAPP_GROUP_ID, message);
+    console.log("Delivered WhatsApp notification to target group");
   } catch (err) {
     console.error("Failed to deliver WhatsApp notification:", err.message);
-    cachedChat = null; // Force refetch on next try
     throw err;
   }
 }
@@ -168,17 +156,12 @@ async function queueOrSend(message) {
     return;
   }
 
-  if (!clientReady) {
-    pendingMessages.push(message);
-    console.log("Client not ready; queued message");
-    return;
-  }
-
   try {
     await sendMessageToGroup(message);
   } catch (err) {
     pendingMessages.push(message);
-    console.log("Re-queued message after failure; will retry when client is ready");
+    const reason = clientReady ? "send failure" : "client not ready";
+    console.log(`Queued message due to ${reason}; will retry when possible`);
   }
 }
 
@@ -201,58 +184,118 @@ async function flushPendingMessages() {
   }
 }
 
-async function handleIssueEvent(payload) {
-  const action = payload.action;
+function formatIssueMessage(action, payload) {
   const issue = payload.issue;
-  if (!action || !issue) {
-    return;
+  if (!issue) {
+    return null;
   }
 
+  const repo = payload.repository?.full_name || "unknown repo";
   const issueUrl = issue.html_url;
   const title = issue.title;
   const number = issue.number;
-  const actor = payload.sender?.login || "Someone";
+  const actor = payload.sender?.login || "someone";
 
-  let message = null;
+  switch (action) {
+    case "opened":
+      return `*🆕 Issue Opened* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    case "assigned": {
+      const assignee = payload.assignee?.login || "unknown";
+      return `*👥 Issue Assigned* ${repo}#${number}\n• Title: ${title}\n• Assigned to: ${assignee}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "unassigned": {
+      const assignee = payload.assignee?.login || "someone";
+      return `*♻️ Issue Unassigned* ${repo}#${number}\n• Title: ${title}\n• Removed: ${assignee}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    case "closed": {
+      const resolution = issue.state_reason || "closed";
+      return `*✅ Issue ${resolution.charAt(0).toUpperCase() + resolution.slice(1)}* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${issueUrl}`;
+    }
+    default:
+      return null;
+  }
+}
 
-  if (action === "opened") {
-    message = `🆕 Issue #${number} opened by ${actor}\n${title}\n${issueUrl}`;
-  } else if (action === "assigned") {
-    const assignee = payload.assignee?.login || "unknown";
-    message = `👥 Issue #${number} assigned to ${assignee} by ${actor}\n${title}\n${issueUrl}`;
-  } else if (action === "unassigned") {
-    const assignee = payload.assignee?.login || "someone";
-    message = `♻️ Issue #${number} unassigned from ${assignee} by ${actor}\n${title}\n${issueUrl}`;
+function formatPullRequestMessage(action, payload) {
+  const pr = payload.pull_request;
+  if (!pr) {
+    return null;
   }
 
+  const repo = payload.repository?.full_name || "unknown repo";
+  const prUrl = pr.html_url;
+  const title = pr.title;
+  const number = pr.number;
+  const actor = payload.sender?.login || "someone";
+  const branchInfo = pr.head?.ref && pr.base?.ref ? `${pr.head.ref} → ${pr.base.ref}` : null;
+
+  switch (action) {
+    case "opened": {
+      const lines = [
+        `*🚀 PR Opened* ${repo}#${number}`,
+        `• Title: ${title}`,
+        branchInfo ? `• Branches: ${branchInfo}` : null,
+        `• By: ${actor}`,
+        `🔗 ${prUrl}`,
+      ].filter(Boolean);
+      return lines.join("\n");
+    }
+    case "reopened": {
+      return `*♻️ PR Reopened* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    case "closed": {
+      if (pr.merged) {
+        const merger = pr.merged_by?.login || actor;
+        const lines = [
+          `*✅ PR Merged* ${repo}#${number}`,
+          `• Title: ${title}`,
+          branchInfo ? `• Branches: ${branchInfo}` : null,
+          `• By: ${merger}`,
+          `🔗 ${prUrl}`,
+        ].filter(Boolean);
+        return lines.join("\n");
+      }
+
+      return `*🛑 PR Closed* ${repo}#${number}\n• Title: ${title}\n• By: ${actor}\n🔗 ${prUrl}`;
+    }
+    default:
+      return null;
+  }
+}
+
+async function handleIssueEvent(payload) {
+  const action = payload.action;
+  if (!action) {
+    return;
+  }
+
+  const message = formatIssueMessage(action, payload);
+
   if (message) {
+    const issueNumber = payload.issue?.number;
+    console.log(
+      `Queueing WhatsApp notification for issue #${issueNumber ?? "unknown"} (${action})`
+    );
     await queueOrSend(message);
+  } else {
+    console.log(`No WhatsApp notification for issue action '${action}', ignoring.`);
   }
 }
 
 async function handlePullRequestEvent(payload) {
   const action = payload.action;
-  const pr = payload.pull_request;
-  if (!action || !pr) {
+  if (!action) {
     return;
   }
 
-  const prUrl = pr.html_url;
-  const title = pr.title;
-  const number = pr.number;
-  const actor = payload.sender?.login || "Someone";
-
-  let message = null;
-
-  if (action === "opened") {
-    message = `🚀 PR #${number} opened by ${actor}\n${title}\n${prUrl}`;
-  } else if (action === "closed" && pr.merged) {
-    const merger = pr.merged_by?.login || actor;
-    message = `✅ PR #${number} merged by ${merger}\n${title}\n${prUrl}`;
-  }
+  const message = formatPullRequestMessage(action, payload);
 
   if (message) {
+    const prNumber = payload.pull_request?.number;
+    console.log(`Queueing WhatsApp notification for PR #${prNumber ?? "unknown"} (${action})`);
     await queueOrSend(message);
+  } else {
+    console.log(`No WhatsApp notification for PR action '${action}', ignoring.`);
   }
 }
 
@@ -320,19 +363,12 @@ client.on("ready", async () => {
   console.log("=".repeat(50));
   clientReady = true;
 
-  try {
-    await ensureTargetChat();
-  } catch (err) {
-    console.error("Unable to resolve target chat immediately:", err.message);
-  }
-
   await flushPendingMessages();
 });
 
 client.on("disconnected", (reason) => {
   console.warn("WhatsApp client disconnected:", reason);
   clientReady = false;
-  cachedChat = null;
 });
 
 client.on("loading_screen", (percent, message) => {
