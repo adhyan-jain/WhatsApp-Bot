@@ -34,6 +34,7 @@ if (OWNER_NUMBER && !OWNER_NUMBER.includes("@c.us")) {
 
 const app = express();
 
+// Health check and status endpoints
 app.get("/", (req, res) => {
   res.send("WhatsApp Bot is running. Check /health for status.");
 });
@@ -41,7 +42,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   const status = {
     status: "running",
-    whatsappReady: client.info ? true : false,
+    whatsappReady: client && client.info ? true : false,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     nodeVersion: process.version,
@@ -148,6 +149,7 @@ async function ensureSheetsExist(sheets) {
   }
 }
 
+// Improved Puppeteer configuration for Render
 const puppeteerConfig = {
   headless: true,
   args: [
@@ -163,7 +165,8 @@ const puppeteerConfig = {
     "--disable-blink-features=AutomationControlled",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding"
+    "--disable-renderer-backgrounding",
+    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   ],
 };
 
@@ -183,10 +186,16 @@ const client = new Client({
     type: "remote",
     remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
   },
+  // Add these options to improve stability
+  qrMaxRetries: 5,
+  restartOnAuthFail: true,
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 0,
 });
 
 let initAttempts = 0;
 const maxAttempts = 3;
+let isReconnecting = false;
 
 async function initializeClient() {
   try {
@@ -248,16 +257,108 @@ client.on("ready", () => {
   console.log(`Your name: ${client.info.pushname}`);
   console.log(`Storage: ${sheetsAPI ? 'Google Sheets' : 'Local JSON'}`);
   console.log("=".repeat(50));
-});
-
-client.on("disconnected", (reason) => {
-  console.log("Client disconnected:", reason);
-  console.log("Attempting to reconnect...");
+  isReconnecting = false;
 });
 
 client.on("loading_screen", (percent, message) => {
   console.log(`Loading: ${percent}% - ${message}`);
 });
+
+// Improved disconnect handler with better cleanup
+client.on("disconnected", async (reason) => {
+  console.log("Client disconnected:", reason);
+  
+  if (isReconnecting) {
+    console.log("Already reconnecting, ignoring duplicate disconnect event");
+    return;
+  }
+  
+  isReconnecting = true;
+  
+  if (reason === "LOGOUT") {
+    console.log("Session logged out - clearing auth data safely...");
+    await cleanAuthDirectory();
+    console.log("Auth data cleared. Please scan QR code again on next startup.");
+    console.log("Restarting in 5 seconds...");
+    setTimeout(() => {
+      process.exit(0); // Let Render restart the service
+    }, 5000);
+    return;
+  }
+  
+  if (reason === "NAVIGATION") {
+    console.log("Navigation error detected, attempting immediate reconnect...");
+    setTimeout(() => {
+      client.initialize().catch(err => {
+        console.error("Reconnection failed:", err.message);
+        isReconnecting = false;
+      });
+    }, 3000);
+    return;
+  }
+  
+  console.log("Attempting to reconnect in 10 seconds...");
+  setTimeout(() => {
+    client.initialize().catch(err => {
+      console.error("Reconnection failed:", err.message);
+      isReconnecting = false;
+    });
+  }, 10000);
+});
+
+// Safe directory cleanup function
+async function cleanAuthDirectory() {
+  const authPath = path.join(__dirname, ".wwebjs_auth");
+  
+  if (!fs.existsSync(authPath)) {
+    console.log("Auth directory doesn't exist, nothing to clean");
+    return;
+  }
+  
+  try {
+    // Use recursive force removal with error handling
+    await new Promise((resolve, reject) => {
+      const removeDir = (dir) => {
+        if (!fs.existsSync(dir)) return;
+        
+        const files = fs.readdirSync(dir);
+        
+        for (const file of files) {
+          const filePath = path.join(dir, file);
+          const stat = fs.statSync(filePath);
+          
+          if (stat.isDirectory()) {
+            removeDir(filePath);
+          } else {
+            try {
+              fs.unlinkSync(filePath);
+            } catch (e) {
+              console.warn(`Could not delete file ${filePath}:`, e.message);
+            }
+          }
+        }
+        
+        try {
+          fs.rmdirSync(dir);
+        } catch (e) {
+          console.warn(`Could not delete directory ${dir}:`, e.message);
+        }
+      };
+      
+      try {
+        removeDir(authPath);
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    });
+    
+    console.log("Successfully cleaned auth directory");
+  } catch (error) {
+    console.error("Error cleaning auth directory:", error.message);
+    // Don't throw, just log - we'll try to continue anyway
+  }
+}
 
 client.on("message_create", async (msg) => {
   if (msg.from === "status@broadcast") return;
@@ -584,45 +685,31 @@ $everyone jc - Mention all non-admins only (admin only)`;
   }
 });
 
-client.on("disconnected", (reason) => {
-  console.log("Client disconnected:", reason);
-  if (reason === "LOGOUT") {
-    console.log("Session logged out - clearing auth data and restarting...");
-    const authPath = path.join(__dirname, ".wwebjs_auth");
-    if (fs.existsSync(authPath)) {
-      fs.rmSync(authPath, { recursive: true, force: true });
-      console.log("Cleared authentication data");
-    }
-    console.log("Please scan QR code again");
-    setTimeout(() => {
-      client.initialize().catch(err => {
-        console.error("Reconnection failed:", err.message);
-      });
-    }, 5000);
-    return;
-  }
-  console.log("Attempting to reconnect in 10 seconds...");
-  setTimeout(() => {
-    client.initialize().catch(err => {
-      console.error("Reconnection failed:", err.message);
-    });
-  }, 10000);
-});
-
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('SIGINT received, destroying client...');
-  client.destroy().then(() => process.exit(0));
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.error('Error destroying client:', e);
+  }
+  process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('SIGTERM received, destroying client...');
-  client.destroy().then(() => process.exit(0));
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.error('Error destroying client:', e);
+  }
+  process.exit(0);
 });
 
+// Data storage implementation
 const issuesFile = path.join(__dirname, "data", "issues.json");
 const dataDir = path.join(__dirname, "data");
 
@@ -723,7 +810,6 @@ async function saveToGoogleSheets() {
     return true;
   } catch (error) {
     console.error("Error saving to Google Sheets:", error.message);
-    console.error("Full error:", error);
     return false;
   }
 }

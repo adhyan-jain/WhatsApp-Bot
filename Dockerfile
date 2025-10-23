@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     wget \
     ca-certificates \
+    dumb-init \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,7 +35,11 @@ RUN apt-get update && apt-get install -y \
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     NODE_ENV=production \
-    DOCKER=true
+    DOCKER=true \
+    NODE_OPTIONS="--max-old-space-size=512"
+
+# Create app user for better security
+RUN groupadd -r appuser && useradd -r -g appuser -G audio,video appuser
 
 # Create and set working directory
 WORKDIR /app
@@ -43,21 +48,28 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install production dependencies (ci is faster & safer for CI/CD)
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy the rest of the application files
 COPY . .
 
 # Ensure writable directories for session data and caching
 RUN mkdir -p /app/data /app/.wwebjs_auth && \
-    chmod -R 777 /app/data /app/.wwebjs_auth
+    chown -R appuser:appuser /app && \
+    chmod -R 755 /app/data /app/.wwebjs_auth
+
+# Switch to non-root user
+USER appuser
 
 # Expose the app port (Render auto-assigns but 3000 is standard)
 EXPOSE 3000
 
 # Add a reliable healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD node -e "try{require('http').get('http://localhost:3000/health',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{if(!d||!d.includes('running'))process.exit(1)})}).on('error',()=>process.exit(1));}catch(e){process.exit(1);}"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health',(r)=>{let d='';r.on('data',(c)=>d+=c);r.on('end',()=>{try{const j=JSON.parse(d);process.exit(j.status==='running'?0:1)}catch(e){process.exit(1)}})}).on('error',()=>process.exit(1))"
 
-# Run the application (disable sandbox for Puppeteer inside Docker)
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+
+# Run the application with proper error handling
 CMD ["node", "--unhandled-rejections=strict", "main.js"]
