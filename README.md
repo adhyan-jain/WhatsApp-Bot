@@ -9,18 +9,21 @@ A powerful WhatsApp bot for managing issues, tasks, and team coordination direct
 ## ✨ Features
 
 ### 📋 Issue Management
+
 - Create, assign, and track issues in WhatsApp
 - Support for multiple assignees
 - Track issue history and completion status
 - View personal assignments with `$issue my`
 
 ### 👥 Team Coordination
+
 - Mention all group members with `$everyone`
 - Filter mentions by admin/non-admin
 - Assign tasks to specific team members
 - Track who created and completed issues
 
 ### 🔒 Admin Controls
+
 - Owner-only commands for group management
 - Secure admin verification
 - Protected mention everyone feature
@@ -43,11 +46,13 @@ git push origin main
 ## 📖 Commands
 
 ### Help
+
 ```
 $help - Show all commands
 ```
 
 ### Issue Management
+
 ```
 $issue add <title>           - Create new issue
 $issue list                  - List all open issues
@@ -62,6 +67,7 @@ $issue delete <id>           - Delete an issue
 ```
 
 ### Admin Commands (Owner Only)
+
 ```
 $everyone     - Mention all group members
 $everyone jc  - Mention non-admin members only
@@ -98,14 +104,14 @@ whatsapp-bot/
 
 ### Environment Variables
 
-| Variable | Required | Description | Example |
-|----------|----------|-------------|---------|
-| `RENDER` | Yes | Tells app it's on Render | `true` |
-| `NODE_ENV` | Yes | Environment mode | `production` |
-| `PORT` | Yes | HTTP server port | `3000` |
-| `OWNER_NUMBER` | Yes* | Bot owner WhatsApp ID | `13105551234@c.us` |
+| Variable       | Required | Description              | Example            |
+| -------------- | -------- | ------------------------ | ------------------ |
+| `RENDER`       | Yes      | Tells app it's on Render | `true`             |
+| `NODE_ENV`     | Yes      | Environment mode         | `production`       |
+| `PORT`         | Yes      | HTTP server port         | `3001`             |
+| `OWNER_NUMBER` | Yes\*    | Bot owner WhatsApp ID    | `13105551234@c.us` |
 
-*Required for admin commands to work
+\*Required for admin commands to work
 
 ### Getting Your OWNER_NUMBER
 
@@ -118,29 +124,34 @@ whatsapp-bot/
 ## 🐳 Docker Deployment
 
 ### Build Locally
+
 ```bash
 docker build -t whatsapp-bot .
 ```
 
 ### Run Locally
+
 ```bash
-docker run -p 3000:3000 \
+docker run -p 3001:3001 \
   -v $(pwd)/data:/app/data \
   -e OWNER_NUMBER=your_number@c.us \
   whatsapp-bot
 ```
 
 ### Deploy on Render
+
 Render automatically builds and deploys using `Dockerfile` and `render.yaml`.
 
 ## 📊 Monitoring
 
 ### Health Check Endpoint
+
 ```
 GET https://your-app-name.onrender.com/health
 ```
 
 Response:
+
 ```json
 {
   "status": "running",
@@ -154,7 +165,9 @@ Response:
 ```
 
 ### Logs
+
 Monitor in real-time via Render Dashboard:
+
 - Application logs
 - Error messages
 - Message activity
@@ -171,24 +184,28 @@ Monitor in real-time via Render Dashboard:
 ## 🆘 Troubleshooting
 
 ### Bot Not Responding
+
 1. Check health endpoint: `/health`
 2. Verify `whatsappReady: true`
 3. Check Render logs for errors
 4. Ensure service is not sleeping (free tier)
 
 ### Admin Commands Not Working
+
 1. Verify `OWNER_NUMBER` is set
 2. Check format: `[country_code][number]@c.us`
 3. No spaces, dashes, or parentheses
 4. Match exactly from logs
 
 ### Session Lost After Restart
+
 1. Add persistent disk in Render
 2. Mount path: `/app/.wwebjs_auth`
 3. Size: 1 GB minimum
 4. Redeploy service
 
 ### Memory Issues
+
 1. Upgrade Render plan for more RAM
 2. Monitor memory usage in health endpoint
 3. Check for memory leaks in logs
@@ -196,16 +213,19 @@ Monitor in real-time via Render Dashboard:
 ## 📈 Scaling
 
 ### Free Tier
+
 - Perfect for small teams (< 10 people)
 - Sleeps after 15 minutes inactivity
 - Use uptime monitoring to keep alive
 
 ### Starter Plan ($7/month)
+
 - No sleeping
 - Better performance
 - Recommended for active teams
 
 ### Pro Features
+
 - Multiple instances
 - Auto-scaling
 - High availability
@@ -214,6 +234,7 @@ Monitor in real-time via Render Dashboard:
 ## 🤝 Contributing
 
 Contributions welcome! Please:
+
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
@@ -250,6 +271,7 @@ MIT License - see LICENSE file for details
 ## 📞 Support
 
 Having issues? Check:
+
 1. [DEPLOYMENT.md](./DEPLOYMENT.md) - Troubleshooting section
 2. Application logs in Render Dashboard
 3. Health endpoint status
@@ -259,4 +281,4 @@ Having issues? Check:
 
 **Made with ❤️ for better team coordination**
 
-*Deploy once, manage everywhere* 🚀
+_Deploy once, manage everywhere_ 🚀

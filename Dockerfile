@@ -61,12 +61,12 @@ RUN mkdir -p /app/data /app/.wwebjs_auth && \
 # Switch to non-root user
 USER appuser
 
-# Expose the app port (Render auto-assigns but 3000 is standard)
-EXPOSE 3000
+# Expose the app port (Render auto-assigns but 3001 is standard)
+EXPOSE 3001
 
 # Add a reliable healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health',(r)=>{let d='';r.on('data',(c)=>d+=c);r.on('end',()=>{try{const j=JSON.parse(d);process.exit(j.status==='running'?0:1)}catch(e){process.exit(1)}})}).on('error',()=>process.exit(1))"
+  CMD node -e "require('http').get('http://localhost:3001/health',(r)=>{let d='';r.on('data',(c)=>d+=c);r.on('end',()=>{try{const j=JSON.parse(d);process.exit(j.status==='running'?0:1)}catch(e){process.exit(1)}})}).on('error',()=>process.exit(1))"
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
