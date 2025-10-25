@@ -118,9 +118,6 @@ app.post("/github/webhook", async (req, res) => {
       case "pull_request":
         await handlePullRequestEvent(payload);
         break;
-      case "issue_comment":
-        await handleIssueCommentEvent(payload);
-        break;
       default:
         console.log(`Event ${event} not handled; ignoring.`);
     }
